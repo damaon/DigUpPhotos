@@ -370,7 +370,7 @@ public final class Indexer {
                     do {
                         let image = try ImageExtractor.prepare(url, maxPixel: screenshot ? 1536 : 1024,
                                                                minSide: options.minImageSide, to: folder,
-                                                               png: screenshot)
+                                                               png: screenshot, scoreQuality: !screenshot)
                         let ocr = screenshot ? ImageExtractor.fullImage(url).map(OCR.text(in:)) ?? "" : ""
                         ready.append(ReadyImage(slot: slot, image: image, ocr: ocr))
                     } catch let error as ExtractError {
@@ -515,9 +515,13 @@ public final class Indexer {
                 }
                 var info = ["width": "\(item.image.width)", "height": "\(item.image.height)"]
                 info.merge(item.image.capture.infoFields()) { _, new in new }
+                if let quality = item.image.quality {
+                    info.merge(quality.infoFields) { _, new in new }
+                }
                 if screenshot { info["ocr_chars"] = "\(item.ocr.count)" }
                 try store.finish(file.id, state: "done", info: info)
-                results[item.slot] = ("done", screenshot ? "ocr \(item.ocr.count) chars" : nil)
+                let qualityNote = item.image.quality.map { "quality \($0.score)" }
+                results[item.slot] = ("done", screenshot ? "ocr \(item.ocr.count) chars" : qualityNote)
             }
         }
     }

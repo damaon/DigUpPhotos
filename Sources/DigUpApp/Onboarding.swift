@@ -127,7 +127,8 @@ final class OnboardingState {
             return []
         }
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return ["Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music"]
+        // Photos & video first: Pictures and Movies, then the usual drop spots for camera rolls and exports.
+        return ["Pictures", "Movies", "Desktop", "Downloads", "Documents"]
             .map { AppSettings.folderURL(home.appendingPathComponent($0).path) }
             .filter(AppSettings.isFolder)
     }
@@ -364,8 +365,8 @@ private struct WelcomeStep: View {
                         example: "“smiling with my wife”, “the zebra”, “whiteboard from Tuesday”")
                 Feature(symbol: "film", title: "Moments inside video",
                         example: "“the part with the drums”, “kids on the beach”")
-                Feature(symbol: "mappin.and.ellipse", title: "When and where they were taken",
-                        example: "Capture dates and GPS from the camera, kept on this Mac")
+                Feature(symbol: "sparkles", title: "The nicer shots float up",
+                        example: "“best photos of the beach” — sharpness, light and faces, scored on this Mac")
             }
             .padding(.top, 30)
             HStack(alignment: .top, spacing: 12) {

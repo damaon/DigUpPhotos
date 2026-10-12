@@ -318,7 +318,7 @@ private struct FolderSettings: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Photos and videos only")
                         Text("Skip screenshots, PDFs, documents and standalone audio. DigUp keeps capture dates and "
-                             + "GPS from your camera when they're in the file.")
+                             + "GPS, and scores how good each photo looks (sharpness, light, faces).")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }

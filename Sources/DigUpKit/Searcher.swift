@@ -15,7 +15,7 @@ public struct SearchHit: Sendable {
     public let locEnd: Double?
     public let excerpt: String?
     /// The file's modification date (seconds since 1970), and what indexing learned about it: "width", "height",
-    /// "taken", "pages", "duration"… (see `Indexer`).
+    /// "taken", "lat", "lon", "quality", "pages", "duration"… (see `Indexer`).
     public let modified: Double
     public let size: Int64
     public let info: [String: String]
@@ -166,15 +166,22 @@ public final class Searcher {
         // Score: meaning z + a bonus that grows with word coverage, + 1 for the kind the query asks for.
         // One common word can't beat a strong meaning match; all the words of an exact lookup usually do.
         // (This beat reciprocal-rank fusion on both evals, 2026-10-07: R@1 0.88 vs 0.73 synthetic, 0.86 vs 0.82 real.)
+        // Photos also get a light boost from `info.quality` (0…100); queries that ask for nice/best photos lean on it more.
         let lookup = Self.isLookup(terms) || identifier != nil
         let (meaningWeight, wordsWeight) = lookup ? (0.5, wordWeight * 2) : (1, wordWeight)
         let hinted = Self.kindHints(text)
+        let wantNice = Self.wantsNicePhotos(text)
         var candidates = Set(best.filter { $0.value.z >= zGate }.keys)
         for (file, share) in coverage where share >= 0.5 { candidates.insert(file) }
+        let quality = try photoQuality(of: candidates, kinds: fileKind)
         var scored: [Int64: Double] = [:]
         for file in candidates {
             var score = meaningWeight * max(best[file]?.z ?? 0, 0) + wordsWeight * pow(coverage[file] ?? 0, 1.5)
             if let kind = fileKind[file], hinted.contains(kind) { score += 1 }
+            if let q = quality[file] {
+                // Mild by default so meaning still leads; "best/beautiful/ładne" leans harder on look.
+                score += (wantNice ? 1.4 : 0.35) * (q / 100)
+            }
             scored[file] = score
         }
 
@@ -362,6 +369,10 @@ public final class Searcher {
         "these", "those", "from", "about", "where", "what", "which", "who", "when", "is", "was", "are", "were", "be",
         "it", "its", "some", "any", "find", "show", "file", "files", "photo", "photos", "picture", "image", "images",
         "screenshot", "screenshots", "video", "videos", "pdf", "document", "documents", "recording",
+        // Aesthetic asks ("best photos of…"): they steer ranking via `wantsNicePhotos`, not keyword search.
+        "best", "nicest", "nice", "beautiful", "pretty", "gorgeous", "stunning", "lovely", "favorite", "favourite",
+        "sharpest", "clearest", "aesthetic", "ładne", "ładnych", "ładny", "ładna", "najładniejsze", "najładniejszych",
+        "piękne", "pięknych", "fajne", "najlepsze", "najlepszych",
         // Bengali and Arabic (normalized, as `terms` sees them)
         "এবং", "ও", "এই", "সেই", "একটি", "আমার", "থেকে", "জন্য", "সাথে", "মধ্যে", "কোথায়", "কোন", "কী", "কি", "যে",
         "ছবি", "স্ক্রিনশট", "ভিডিও", "ফাইল", "পিডিএফ",
@@ -416,5 +427,34 @@ public final class Searcher {
                     SearchText.inflects(key) && key.unicodeScalars.count >= 3 && word.hasPrefix(key)
                 }?.value
             })
+    }
+
+    /// Words that ask for nicer photos ("best", "beautiful", "ładne"): lean harder on `info.quality`.
+    static let niceWords: Set<String> = [
+        "best", "nicest", "nice", "beautiful", "pretty", "gorgeous", "stunning", "lovely", "favorite", "favourite",
+        "sharpest", "clearest", "aesthetic",
+        "ładne", "ładnych", "ładny", "ładna", "najładniejsze", "najładniejszych", "piękne", "pięknych", "fajne",
+        "najlepsze", "najlepszych",
+    ]
+
+    static func wantsNicePhotos(_ text: String) -> Bool {
+        let words = Set(SearchText.normalized(text).lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty })
+        return !words.isDisjoint(with: niceWords)
+    }
+
+    /// `info.quality` for photo candidates (0…100). Missing when the file isn't a photo or wasn't scored yet.
+    private func photoQuality(of candidates: Set<Int64>, kinds: [Int64: FileKind]) throws -> [Int64: Double] {
+        let photos = candidates.filter { kinds[$0] == .image }
+        guard !photos.isEmpty else { return [:] }
+        var quality: [Int64: Double] = [:]
+        let list = photos.map(String.init).joined(separator: ",")
+        try store.db.query("""
+            SELECT id, json_extract(info, '$.quality') FROM files
+            WHERE id IN (\(list)) AND json_extract(info, '$.quality') IS NOT NULL
+            """) { row in
+            if let value = row.text(1).flatMap(Double.init) { quality[row.int(0)] = value }
+        }
+        return quality
     }
 }
