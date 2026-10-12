@@ -12,8 +12,9 @@ let usage = """
       digup estimate <folder>... [--json]     what would be indexed, and how long the first pass takes
       digup index <folder>... [--limit N]     sync the index with these folders, embed what's new, then the rest
                                               of long PDFs and documents
-      digup search <words>... [--kind K,K] [-n 10] [--json]
-                                              "code: <words>" searches the code index
+      digup search <words>... [--kind K,K] [--person ID]... [-n 10] [--json]
+                                              "code: <words>" searches the code index; --person is AND (all on one photo)
+      digup people [--rename ID=Name]         list people from face clusters, or name one
       digup status                            what's in the index
       digup eval <queries.json> [-n 10]       recall of known answers (see evals/; "code: …" queries search code)
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
@@ -25,6 +26,7 @@ let usage = """
       --code               estimate, index or show the code index of these folders (code.sqlite in the index
                            folder): source files, their repos' docs and notebooks, minus what git ignores
       --kind K,K           screenshot, image, pdf, doc, audio, video
+      --person ID          only photos that include this person (repeatable: AND — all must be on the same photo)
       --include-code       also index loose source code and data files as documents (outside code projects)
       --include-datasets   don't skip folders that look like datasets
       --photos-video       index only photos and videos (screenshots, PDFs, documents and audio are skipped)
@@ -53,7 +55,7 @@ struct Arguments {
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
                                       "--linger", "--shot-tokens", "--code-stretch"]
-    static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude"]
+    static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--person"]
 
     init(_ raw: ArraySlice<String>) throws {
         var index = raw.startIndex
@@ -138,6 +140,15 @@ struct Arguments {
                 throw CLIError("unknown kind \($0); use screenshot, image, pdf, doc, audio, video")
             }
             return kind
+        })
+    }
+
+    /// `--person ID` (repeatable): photos must contain every listed person together.
+    func people() throws -> Set<Int64>? {
+        guard let list = lists["--person"], !list.isEmpty else { return nil }
+        return Set(try list.map {
+            guard let id = Int64($0) else { throw CLIError("person id must be a number: \($0)") }
+            return id
         })
     }
 }
@@ -344,7 +355,7 @@ func search(_ args: Arguments) throws {
     let vector = try queryVectors([query], store: store, searcher: searcher,
                                   prompt: code == nil ? Prompts.query : Prompts.codeQuery)?.first
     let encoded = Date()
-    let hits = try searcher.search(query, queryVector: vector, kinds: try args.kinds(),
+    let hits = try searcher.search(query, queryVector: vector, kinds: try args.kinds(), people: try args.people(),
                                    limit: args.values["-n"].flatMap(Int.init) ?? 10, zGate: args.zGate,
                                    wordWeight: args.wordWeight)
     let searched = Date()
@@ -377,6 +388,28 @@ func search(_ args: Arguments) throws {
     }
     print(String(format: "(%d vectors · query encoder %.2f s incl. start-up · search %.0f ms)", searcher.vectorCount,
                  encoded.timeIntervalSince(started), searched.timeIntervalSince(encoded) * 1000))
+}
+
+func people(_ args: Arguments) throws {
+    let store = try IndexStore(directory: args.indexFolder)
+    if let rename = args.values["--rename"] {
+        let parts = rename.split(separator: "=", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let id = Int64(parts[0]) else {
+            throw CLIError("--rename needs ID=Name, e.g. --rename 3=Anna")
+        }
+        try store.renamePerson(id, to: parts[1])
+        print("renamed person \(id) to “\(parts[1])”")
+        return
+    }
+    let people = try store.people()
+    if people.isEmpty {
+        print("no people yet (index photos with faces first)")
+        return
+    }
+    for person in people {
+        print("\(lpad("\(person.id)", 4))  \(pad(person.displayName, 24))  "
+              + "\(person.photoCount) photos · \(person.faceCount) faces")
+    }
 }
 
 func status(_ args: Arguments) throws {
@@ -532,6 +565,7 @@ do {
     case "estimate": try estimate(args)
     case "index": try index(args)
     case "search": try search(args)
+    case "people": try people(args)
     case "status": try status(args)
     case "eval": try evaluate(args)
     case "index-service": exit(try indexService(args))

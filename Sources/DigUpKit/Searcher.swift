@@ -113,12 +113,21 @@ public final class Searcher {
     public static let wordWeight = 2.0
     public static let codeWordWeight = 1.0
 
-    public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil, limit: Int = 20,
-                       zGate: Double = 2.0, wordWeight: Double? = nil, prefixLast: Bool = false) throws -> [SearchHit] {
+    /// Hybrid search. `people`: only photos that contain every listed person on the same image (AND). Nil or empty
+    /// means no people filter.
+    public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil,
+                       people: Set<Int64>? = nil, limit: Int = 20, zGate: Double = 2.0, wordWeight: Double? = nil,
+                       prefixLast: Bool = false) throws -> [SearchHit] {
         let wordWeight = wordWeight ?? (isCode ? Self.codeWordWeight : Self.wordWeight)
         if queryVector != nil, !vectorsLoaded { try reload() }
         let fileKind = self.fileKind
-        let allowed = { (file: Int64) -> Bool in kinds == nil || fileKind[file].map { kinds!.contains($0) } ?? false }
+        // AND: a photo must include Person A and Person B when both are selected.
+        let peopleFiles = try store.filesContaining(allPeople: people ?? [])
+        let allowed = { (file: Int64) -> Bool in
+            guard kinds == nil || fileKind[file].map { kinds!.contains($0) } ?? false else { return false }
+            if let peopleFiles { return peopleFiles.contains(file) }
+            return true
+        }
 
         // Meaning: score every vector on this query's scale (`meaning`), keep each file's best segment.
         var best: [Int64: (z: Double, cosine: Double, row: Int)] = [:]
