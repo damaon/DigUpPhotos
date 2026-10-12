@@ -759,8 +759,9 @@ nonisolated final class Engine: @unchecked Sendable {
     /// shows while the query encoder starts. Files that are gone (deleted since the last sync, or on a drive that's
     /// unplugged) are left out.
     /// `code`: the code index (its own folders), never anything else.
+    /// `people`: only photos that contain every listed person together (AND).
     func search(_ text: String, vector: QueryVector?, prefixLast: Bool, kinds: Set<FileKind>? = nil,
-                limit: Int = 40, code: Bool = false) async -> [SearchHit] {
+                people: Set<Int64>? = nil, limit: Int = 40, code: Bool = false) async -> [SearchHit] {
         if code { return await searchCode(text, vector: vector, prefixLast: prefixLast, limit: limit) }
         return await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
@@ -772,7 +773,7 @@ nonisolated final class Engine: @unchecked Sendable {
                     }
                     values = nil
                 }
-                let hits = try? searcher?.search(text, queryVector: values, kinds: kinds, limit: limit,
+                let hits = try? searcher?.search(text, queryVector: values, kinds: kinds, people: people, limit: limit,
                                                  prefixLast: prefixLast)
                 // Only files that are searched (`FolderSelection`'s rule, as the crawler walks them) and of types not
                 // skipped: a removed folder's rows (or a newly skipped type's) can outlive it until a helper syncs
@@ -812,6 +813,44 @@ nonisolated final class Engine: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
                 continuation.resume(returning: (try? (code ? codeSearcher : searcher)?.text(ofSegment: id)) ?? nil)
+            }
+        }
+    }
+
+    // MARK: People
+
+    /// People clustered from face embeddings (named and still anonymous).
+    func people() async -> [Person] {
+        await withCheckedContinuation { continuation in
+            searchQueue.async { [self] in
+                continuation.resume(returning: (try? searchStore?.people()) ?? [])
+            }
+        }
+    }
+
+    func renamePerson(_ id: Int64, to name: String?) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            searchQueue.async { [self] in
+                try? searchStore?.renamePerson(id, to: name)
+                continuation.resume()
+            }
+        }
+    }
+
+    func mergePeople(keeper: Int64, other: Int64) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            searchQueue.async { [self] in
+                try? searchStore?.mergePeople(keeper: keeper, other: other)
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Photo path for a person's exemplar face thumbnail.
+    func exemplarPhoto(ofPerson id: Int64) async -> String? {
+        await withCheckedContinuation { continuation in
+            searchQueue.async { [self] in
+                continuation.resume(returning: try? searchStore?.exemplarPhotoPath(ofPerson: id))
             }
         }
     }
