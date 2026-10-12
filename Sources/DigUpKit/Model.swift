@@ -94,7 +94,8 @@ public struct IndexOptions: Sendable {
         if code { return "code1 lines\(codeStretch)" }
         // Same string as before when `kinds` is empty (CLI / evals), so a full index isn't rebuilt for nothing —
         // except `qN` when photo quality scoring is on (photos are read again to fill `info.quality`).
-        var stamp = "photo\(photoBudget) shot\(screenshotBudget) page\(pageBudget) frame\(frameBudget)/\(frameInterval)s audio\(audioWindow)/\(audioHop)s q\(PhotoQuality.version)"
+        // `qN`: photo quality; `fN`: face crops for people. Bumping either re-reads photos.
+        var stamp = "photo\(photoBudget) shot\(screenshotBudget) page\(pageBudget) frame\(frameBudget)/\(frameInterval)s audio\(audioWindow)/\(audioHop)s q\(PhotoQuality.version) f1"
         if !kinds.isEmpty {
             stamp = "kinds:" + kinds.map(\.rawValue).sorted().joined(separator: ",") + " " + stamp
         }
