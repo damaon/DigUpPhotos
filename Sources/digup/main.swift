@@ -54,7 +54,7 @@ struct Arguments {
     var lists: [String: [String]] = [:]
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
-                                      "--linger", "--shot-tokens", "--code-stretch"]
+                                      "--linger", "--shot-tokens", "--code-stretch", "--rename"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--person"]
 
     init(_ raw: ArraySlice<String>) throws {
