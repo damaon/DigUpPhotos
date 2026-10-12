@@ -18,6 +18,8 @@ nonisolated struct AppSettings: Sendable {
     var excludedFolders: [URL]
     /// File extensions that are never indexed ("heic", "txt"), on top of what DigUp never reads anyway.
     var excludedTypes: [String]
+    /// When on (the default), DigUp indexes only photos and videos — not screenshots, PDFs, documents or audio.
+    var photosAndVideoOnly: Bool
     var indexDirectory: URL
     /// Where the model files are downloaded to and loaded from (the helpers get it as DIGUP_MODELS).
     var modelsDirectory: URL
@@ -63,6 +65,8 @@ nonisolated struct AppSettings: Sendable {
             excludedTypes: (defaults.stringArray(forKey: "excludedTypes")
                 ?? defaults.string(forKey: "excludedTypes").map { [$0] } ?? [])
                 .flatMap { IndexOptions.extensions($0) }.sorted(),
+            photosAndVideoOnly: defaults.object(forKey: "photosAndVideoOnly") == nil
+                || defaults.bool(forKey: "photosAndVideoOnly"),
             indexDirectory: defaults.string(forKey: "indexDir").map(folderURL) ?? defaultIndexDirectory,
             modelsDirectory: defaults.string(forKey: "modelsDir").map(folderURL) ?? ModelFiles.installed,
             hotkey: defaults.string(forKey: "hotkey") ?? defaultHotkey,
@@ -101,6 +105,10 @@ nonisolated struct AppSettings: Sendable {
 
     static func save(excludedTypes: [String]) {
         defaults.set(excludedTypes, forKey: "excludedTypes")
+    }
+
+    static func save(photosAndVideoOnly: Bool) {
+        defaults.set(photosAndVideoOnly, forKey: "photosAndVideoOnly")
     }
 
     static func save(hotkey: String) {

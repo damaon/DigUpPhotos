@@ -93,13 +93,14 @@ final class OnboardingState {
         let others = chosen.filter { root in
             !candidates.contains { $0.path == root.path || $0.path == FolderSelection.parent(root.path) }
         }
-        folders = FolderChoices(rows: candidates + others, selection: selection, types: settings.excludedTypes)
+        folders = FolderChoices(rows: candidates + others, selection: selection, types: settings.excludedTypes,
+                                photosAndVideoOnly: settings.photosAndVideoOnly)
         let codeCandidates = CodeFolders.candidates(searched: [])
         codeFolders = FolderChoices(rows: codeCandidates,
                                     selection: FolderSelection(chosen: settings.codeRoots.isEmpty
                                                                    ? codeCandidates.map(\.path)
                                                                    : settings.codeRoots.map(\.path)),
-                                    types: [], code: true)
+                                    types: [], code: true, photosAndVideoOnly: false)
         searchCode = !settings.codeRoots.isEmpty
         launchAtLogin = app.launchesAtLogin || app.suggestsLaunchAtLogin
         indexOnBattery = settings.indexOnBattery
@@ -359,12 +360,12 @@ private struct WelcomeStep: View {
                 .foregroundStyle(.secondary)
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: 16) {
-                Feature(symbol: "camera.viewfinder", title: "Screenshots and photos",
-                        example: "“that payment error”, “the zebra”, “whiteboard from Tuesday”")
-                Feature(symbol: "doc.text", title: "PDFs and documents",
-                        example: "“the clause about pets in the lease”, “flight receipt”")
-                Feature(symbol: "waveform", title: "Moments inside audio and video",
-                        example: "“where they talk about sleep”, “the part with the drums”")
+                Feature(symbol: "photo", title: "Photos",
+                        example: "“smiling with my wife”, “the zebra”, “whiteboard from Tuesday”")
+                Feature(symbol: "film", title: "Moments inside video",
+                        example: "“the part with the drums”, “kids on the beach”")
+                Feature(symbol: "mappin.and.ellipse", title: "When and where they were taken",
+                        example: "Capture dates and GPS from the camera, kept on this Mac")
             }
             .padding(.top, 30)
             HStack(alignment: .top, spacing: 12) {

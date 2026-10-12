@@ -28,12 +28,15 @@ nonisolated struct FolderEstimate: Identifiable, Sendable {
 enum Estimates {
     /// Estimates each folder in turn, leaving out what's skipped, calling `update` (on the main actor) as each one
     /// arrives. `code`: what code search would read there (`digup estimate --code`).
+    /// `photosAndVideoOnly`: match the app's default index scope (photos and video, not screenshots/PDFs/…).
     static func run(_ folders: [URL], excluded: [URL] = [], types: [String] = [], code: Bool = false,
+                    photosAndVideoOnly: Bool = true,
                     update: @escaping @MainActor @Sendable (FolderEstimate) -> Void) {
         let process = Process()
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/digup")
         var arguments = ["estimate", "--json"]
         if code { arguments.append("--code") }
+        if photosAndVideoOnly && !code { arguments.append("--photos-video") }
         for folder in excluded { arguments += ["--exclude", folder.path] }
         if !types.isEmpty { arguments += ["--exclude-ext", types.joined(separator: ",")] }
         process.arguments = arguments + folders.map(\.path)

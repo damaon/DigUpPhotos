@@ -112,8 +112,16 @@ struct ResultRow: Identifiable, Equatable {
         }
     }
 
-    /// "Screenshot · Oct 1, 2026 · 1440 × 900 · 2.1 MB", "PDF · … · 463 pages, 120 read so far · 23 MB",
-    /// "Python · 63 lines · Oct 1, 2026 · 2 KB"
+    /// Capture date from EXIF / video metadata when DigUp stored it; otherwise the file's mtime.
+    var taken: Date? { Self.parseTaken(info["taken"]) }
+
+    /// GPS from EXIF / video metadata, when DigUp stored it.
+    var capturePlace: String? {
+        guard let lat = info["lat"].flatMap(Double.init), let lon = info["lon"].flatMap(Double.init) else { return nil }
+        return CaptureInfo.format(latitude: lat, longitude: lon)
+    }
+
+    /// "Photo · Oct 1, 2026 · 37.77°N 122.42°W · 1440 × 900 · 2.1 MB", "Video · … · 0:42 · 23 MB"
     var details: String {
         if kind == .code {
             var parts = [CodeExtractor.language(of: url.path)]
@@ -126,7 +134,9 @@ struct ResultRow: Identifiable, Equatable {
             if size > 0 { parts.append(bytes(size)) }
             return parts.joined(separator: " · ")
         }
-        var parts = [kind.title, modified.formatted(date: .abbreviated, time: .omitted)]
+        let when = (taken ?? modified).formatted(date: .abbreviated, time: .omitted)
+        var parts = [kind.title, when]
+        if let capturePlace { parts.append(capturePlace) }
         if let width = info["width"], let height = info["height"] { parts.append("\(width) × \(height)") }
         // A long file still being read (`Indexer.finishLongFiles`): what isn't read yet can't match.
         let readTo = info["read_to"].flatMap(Int.init)
@@ -139,6 +149,30 @@ struct ResultRow: Identifiable, Equatable {
         if size > 0 { parts.append(bytes(size)) }
         return parts.joined(separator: " · ")
     }
+
+    /// EXIF `YYYY:MM:DD HH:MM:SS` or ISO-8601 from video metadata.
+    static func parseTaken(_ text: String?) -> Date? {
+        guard let text, !text.isEmpty else { return nil }
+        if let date = iso8601.date(from: text) { return date }
+        let parts = text.split(separator: " ")
+        guard parts.count == 2 else { return nil }
+        let day = parts[0].split(separator: ":")
+        let time = parts[1].split(separator: ":")
+        guard day.count == 3, time.count >= 2,
+              let year = Int(day[0]), let month = Int(day[1]), let dayOfMonth = Int(day[2]),
+              let hour = Int(time[0]), let minute = Int(time[1]) else { return nil }
+        let second = time.count > 2 ? Int(time[2]) ?? 0 : 0
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = dayOfMonth
+        components.hour = hour
+        components.minute = minute
+        components.second = second
+        return Calendar.current.date(from: components)
+    }
+
+    private static let iso8601 = ISO8601DateFormatter()
 
     static func clock(_ seconds: Double) -> String {
         let total = Int(seconds)
@@ -153,8 +187,17 @@ enum ResultGroupKind: CaseIterable {
     /// Code search's results (the code index; a search of it never shows anything else).
     case code
 
-    /// The kinds of files the main index holds: the window's kind filters, ⌘2 to ⌘6.
-    static let files: [ResultGroupKind] = [.screenshots, .images, .documents, .video, .audio]
+    /// Photos & video MVP: the window's kind filters when DigUp indexes only pictures and video.
+    static let photosAndVideo: [ResultGroupKind] = [.images, .video]
+    /// Every kind DigUp can index in the main store (when "Photos and videos only" is off).
+    static let allFiles: [ResultGroupKind] = [.screenshots, .images, .documents, .video, .audio]
+    /// Default chips: photos and video (the MVP focus).
+    static let files: [ResultGroupKind] = photosAndVideo
+
+    /// Kind filter chips for the current mode.
+    static func files(photosAndVideoOnly: Bool) -> [ResultGroupKind] {
+        photosAndVideoOnly ? photosAndVideo : allFiles
+    }
 
     init(_ kind: FileKind) {
         switch kind {
@@ -170,7 +213,7 @@ enum ResultGroupKind: CaseIterable {
     var title: String {
         switch self {
         case .screenshots: "Screenshots"
-        case .images: "Images"
+        case .images: "Photos"
         case .documents: "Documents"
         case .video: "Video"
         case .audio: "Audio"
@@ -247,7 +290,7 @@ extension FileKind {
     var title: String {
         switch self {
         case .screenshot: "Screenshot"
-        case .image: "Image"
+        case .image: "Photo"
         case .pdf: "PDF"
         case .doc: "Document"
         case .audio: "Audio"

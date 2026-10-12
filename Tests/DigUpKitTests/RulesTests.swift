@@ -30,6 +30,39 @@ import Testing
         #expect(Rules.classify(file, type: .init(filenameExtension: "py"), options: options) == .index(.doc))
     }
 
+    @Test func photosAndVideoSkipsScreenshotsDocsAndAudio() {
+        var options = IndexOptions()
+        options.kinds = FileKind.photosAndVideo
+        let shot = folder.appendingPathComponent("Screenshot 2026-10-01.png")
+        #expect(Rules.classify(shot, type: .init(filenameExtension: "png"), options: options)
+                == .skip("not photos or video"))
+        let photo = folder.appendingPathComponent("IMG_1234.jpg")
+        #expect(Rules.classify(photo, type: .init(filenameExtension: "jpg"), options: options) == .index(.image))
+        let pdf = folder.appendingPathComponent("lease.pdf")
+        #expect(Rules.classify(pdf, type: .init(filenameExtension: "pdf"), options: options)
+                == .skip("not photos or video"))
+        let video = folder.appendingPathComponent("clip.mp4")
+        #expect(Rules.classify(video, type: .init(filenameExtension: "mp4"), options: options) == .index(.video))
+        let song = folder.appendingPathComponent("track.m4a")
+        #expect(Rules.classify(song, type: .init(filenameExtension: "m4a"), options: options)
+                == .skip("not photos or video"))
+    }
+
+    @Test func iso6709AndFingerprint() {
+        let gps = CaptureInfo.parseISO6709("+37.7749-122.4194/")
+        #expect(gps?.latitude == 37.7749)
+        #expect(gps?.longitude == -122.4194)
+        #expect(CaptureInfo.parseISO6709("+51.5-0.12+10/")?.latitude == 51.5)
+        #expect(CaptureInfo.format(latitude: -37.8, longitude: 144.96) == "37.80°S 144.96°E")
+        var options = IndexOptions()
+        let full = options.fingerprint
+        options.kinds = FileKind.photosAndVideo
+        #expect(options.fingerprint.hasPrefix("kinds:image,video "))
+        #expect(options.fingerprint.hasSuffix(full))
+        options.kinds = []
+        #expect(options.fingerprint == full)
+    }
+
     @Test func machineNames() {
         #expect(Rules.looksMachineNamed("clip_000123"))
         #expect(Rules.looksMachineNamed("frame-0042"))

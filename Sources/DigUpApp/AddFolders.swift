@@ -32,7 +32,7 @@ final class AddFoldersController {
         let suggestions = (code ? CodeFolders.candidates(searched: settings.roots) : OnboardingState.candidates())
             .filter { !selection.isSearched($0.path) }
         let choices = FolderChoices(rows: suggestions, selection: selection, types: code ? [] : settings.excludedTypes,
-                                    code: code)
+                                    code: code, photosAndVideoOnly: code ? false : settings.photosAndVideoOnly)
         self.choices = choices
         // Snapshot runs never put an open panel on screen (-debugChoices picks folders instead).
         guard suggestions.isEmpty, !AppController.offscreen else { return present(choices, on: window) }

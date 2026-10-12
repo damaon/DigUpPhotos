@@ -29,11 +29,12 @@ enum ImageExtractor {
         let path: String
         let width: Int
         let height: Int
-        let taken: String?   // EXIF DateTimeOriginal, as written by the camera
+        let capture: CaptureInfo
     }
 
     /// Writes a downscaled copy for the model. ImageIO decodes straight to the thumbnail size, so a 48 MP photo never
-    /// gets decoded at full resolution. HEIC, RAW, WebP and friends all work.
+    /// gets decoded at full resolution. HEIC, RAW, WebP and friends all work. Capture date and GPS stay with the
+    /// original file's properties (not the thumbnail).
     static func prepare(_ url: URL, maxPixel: Int, minSide: Int, to folder: URL, png: Bool) throws -> Prepared {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
         else { throw ExtractError.unreadable("not an image") }
@@ -52,8 +53,10 @@ enum ImageExtractor {
         let out = folder.appendingPathComponent(UUID().uuidString + (png ? ".png" : ".jpg"))
         try write(thumbnail, to: out, png: png)
         let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
+        let gps = CaptureInfo.gps(from: properties)
         return Prepared(path: out.path, width: width, height: height,
-                        taken: exif?[kCGImagePropertyExifDateTimeOriginal] as? String)
+                        capture: CaptureInfo(taken: exif?[kCGImagePropertyExifDateTimeOriginal] as? String,
+                                             latitude: gps?.latitude, longitude: gps?.longitude))
     }
 
     static func fullImage(_ url: URL) -> CGImage? {

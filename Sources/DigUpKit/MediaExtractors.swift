@@ -162,4 +162,41 @@ enum MediaInfo {
         let seconds = try? runBlocking { try await AVURLAsset(url: url).load(.duration).seconds }
         return seconds.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
     }
+
+    /// Creation time and GPS from a video's QuickTime / iPhone metadata (when the camera wrote them).
+    static func capture(of url: URL) -> CaptureInfo {
+        (try? runBlocking { try await capture(of: AVURLAsset(url: url)) }) ?? CaptureInfo()
+    }
+
+    static func capture(of asset: AVURLAsset) async throws -> CaptureInfo {
+        var taken: String?
+        var latitude: Double?
+        var longitude: Double?
+        let items = (try? await asset.load(.metadata)) ?? []
+        for item in items {
+            let identifier = item.identifier
+            if identifier == .commonIdentifierCreationDate || identifier == .quickTimeMetadataCreationDate,
+               taken == nil, let date = try? await item.load(.dateValue) {
+                taken = iso8601.string(from: date)
+            } else if identifier == .commonIdentifierLocation || identifier == .quickTimeMetadataLocationISO6709,
+                      latitude == nil,
+                      let text = try? await item.load(.stringValue),
+                      let gps = CaptureInfo.parseISO6709(text) {
+                latitude = gps.latitude
+                longitude = gps.longitude
+            }
+        }
+        if taken == nil,
+           let item = try? await asset.load(.creationDate),
+           let date = try? await item.load(.dateValue) {
+            taken = iso8601.string(from: date)
+        }
+        return CaptureInfo(taken: taken, latitude: latitude, longitude: longitude)
+    }
+
+    private static let iso8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
 }
