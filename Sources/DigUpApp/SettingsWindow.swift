@@ -4,12 +4,13 @@ import Observation
 import SwiftUI
 
 enum SettingsTab: String, CaseIterable {
-    case general, folders, code, storage
+    case general, folders, people, code, storage
 
     var title: String {
         switch self {
         case .general: "General"
         case .folders: "Folders"
+        case .people: "People"
         case .code: "Code"
         case .storage: "Storage"
         }
@@ -19,6 +20,7 @@ enum SettingsTab: String, CaseIterable {
         switch self {
         case .general: "gearshape"
         case .folders: "folder"
+        case .people: "person.2"
         case .code: "chevron.left.forwardslash.chevron.right"
         case .storage: "internaldrive"
         }
@@ -122,6 +124,7 @@ final class SettingsState {
     var tab = SettingsTab.general
     private(set) var summaries: [Engine.RootSummary]?
     private(set) var codeSummaries: [Engine.RootSummary] = []
+    private(set) var people: [Person] = []
     private(set) var indexSize: Int64 = 0
     private(set) var codeIndexSize: Int64 = 0
     var launchAtLogin = false
@@ -148,7 +151,18 @@ final class SettingsState {
         indexSize = app.engine.indexSize
         codeIndexSize = app.engine.codeIndexSize
         codeSummaries = await app.engine.rootSummaries(code: true)
+        people = await app.engine.people()
         summaries = await app.engine.rootSummaries()
+    }
+
+    func renamePerson(_ id: Int64, to name: String) async {
+        await app.engine.renamePerson(id, to: name)
+        people = await app.engine.people()
+    }
+
+    func mergePeople(keeper: Int64, other: Int64) async {
+        await app.engine.mergePeople(keeper: keeper, other: other)
+        people = await app.engine.people()
     }
 
     /// The index changed: refresh the folder counts, at most every 2 s while files are being indexed.
@@ -177,6 +191,7 @@ private struct SettingsPane: View {
             switch tab {
             case .general: GeneralSettings(state: state)
             case .folders: FolderSettings(state: state)
+            case .people: PeopleSettings(state: state)
             case .code: CodeSettings(state: state)
             case .storage: StorageSettings(state: state)
             }
@@ -367,6 +382,112 @@ private struct FolderSettings: View {
 
     private var removalTitle: String {
         "Stop searching “\(removing.map { ($0.path as NSString).lastPathComponent } ?? "")”?"
+    }
+}
+
+/// Name the people DigUp clustered from faces. In search, pick several to keep only photos with all of them.
+private struct PeopleSettings: View {
+    @Bindable var state: SettingsState
+    @State private var draftNames: [Int64: String] = [:]
+    @State private var mergeKeeper: Int64?
+
+    var body: some View {
+        Form {
+            Section {
+                if state.people.isEmpty {
+                    Text("No people yet. Index photos that show faces, then name them here.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(state.people) { person in
+                        HStack(spacing: 12) {
+                            PersonThumb(path: nil, personID: person.id, engine: state.app.engine)
+                            VStack(alignment: .leading, spacing: 4) {
+                                TextField("Name", text: Binding(
+                                    get: { draftNames[person.id] ?? person.name ?? "" },
+                                    set: { draftNames[person.id] = $0 }
+                                ), prompt: Text(person.displayName))
+                                .onSubmit { Task { await save(person.id) } }
+                                Text("\(person.photoCount) photos · \(person.faceCount) faces")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 8)
+                            if mergeKeeper == person.id {
+                                Text("Pick another to merge…")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            } else if let keeper = mergeKeeper {
+                                Button("Merge into this") {
+                                    Task {
+                                        await state.mergePeople(keeper: keeper, other: person.id)
+                                        mergeKeeper = nil
+                                        draftNames[person.id] = nil
+                                    }
+                                }
+                                .controlSize(.small)
+                            } else {
+                                Button("Merge…") { mergeKeeper = person.id }
+                                    .controlSize(.small)
+                            }
+                        }
+                    }
+                }
+            } header: {
+                Text("People in your photos")
+            } footer: {
+                Text("In the search window, select one or more people. Selecting two keeps only photos where "
+                     + "both appear together.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if mergeKeeper != nil {
+                Section {
+                    Button("Cancel merge") { mergeKeeper = nil }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            for person in state.people { draftNames[person.id] = person.name ?? "" }
+        }
+        .onChange(of: state.people) { _, people in
+            for person in people where draftNames[person.id] == nil {
+                draftNames[person.id] = person.name ?? ""
+            }
+        }
+    }
+
+    private func save(_ id: Int64) async {
+        await state.renamePerson(id, to: draftNames[id] ?? "")
+    }
+}
+
+/// Small thumbnail from a person's exemplar photo (loaded asynchronously).
+private struct PersonThumb: View {
+    let path: String?
+    let personID: Int64
+    let engine: Engine
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "person.crop.circle.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 36, height: 36)
+        .clipShape(Circle())
+        .task(id: personID) {
+            guard let path = await engine.exemplarPhoto(ofPerson: personID) else { return }
+            image = NSImage(contentsOf: URL(fileURLWithPath: path))
+        }
     }
 }
 

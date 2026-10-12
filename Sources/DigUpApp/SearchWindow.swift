@@ -27,6 +27,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
             search.filter = kind
             search.query = query
         }
+        search.refreshPeople()
         app.present(window)
         if !AppController.offscreen { window.makeFirstResponder(search.field) }
         installKeyMonitor()
@@ -206,6 +207,11 @@ final class SearchModel {
     var filter: ResultGroupKind? {
         didSet { if filter != oldValue { run() } }
     }
+    /// People to require on each photo (AND when more than one). Empty means no people filter.
+    var peopleFilter: Set<Int64> = [] {
+        didSet { if peopleFilter != oldValue { run() } }
+    }
+    private(set) var people: [Person] = []
     private(set) var results = ResultSet.empty
     /// Results per kind for the query, whatever the filter (the counts on the kind buttons).
     private(set) var counts: [ResultGroupKind: Int] = [:]
@@ -226,6 +232,20 @@ final class SearchModel {
 
     init(engine: Engine) {
         self.engine = engine
+    }
+
+    func refreshPeople() {
+        Task {
+            let list = await engine.people()
+            people = list
+            // Drop filter ids that no longer exist (merged/removed).
+            let known = Set(list.map(\.id))
+            peopleFilter = peopleFilter.intersection(known)
+        }
+    }
+
+    func togglePerson(_ id: Int64) {
+        if peopleFilter.contains(id) { peopleFilter.remove(id) } else { peopleFilter.insert(id) }
     }
 
     /// Every result shown, in order (strong ones, then the weaker ones once they're unfolded).
@@ -290,6 +310,7 @@ final class SearchModel {
         engine.prewarm()
         engine.embedAhead(text, code: code)
         let filter = self.filter
+        let people = peopleFilter
         let showAt = ContinuousClock.now + SearchPanelController.typingPause
         if code {
             task = Task {
@@ -310,9 +331,10 @@ final class SearchModel {
         task = Task {
             let vector = await engine.embedQuery(text)
             guard !Task.isCancelled, current == generation else { return }
-            let all = await engine.search(text, vector: vector, prefixLast: false, limit: 120)
+            let peopleArg: Set<Int64>? = people.isEmpty ? nil : people
+            let all = await engine.search(text, vector: vector, prefixLast: false, people: peopleArg, limit: 120)
             let shown = filter == nil ? all : await engine.search(text, vector: vector, prefixLast: false,
-                                                                    kinds: filter!.kinds, limit: 120)
+                                                                    kinds: filter!.kinds, people: peopleArg, limit: 120)
             try? await Task.sleep(until: showAt, tolerance: .milliseconds(1), clock: .continuous)
             guard !Task.isCancelled, current == generation else { return }
             var counts: [ResultGroupKind: Int] = [:]
@@ -322,7 +344,8 @@ final class SearchModel {
             showWeaker = false
             if !rows.contains(where: { $0.id == selection }) { selection = rows.first?.id }
             hasResults = true
-            log("window: \"\(text)\"\(filter.map { " in \($0.title)" } ?? ""): \(results.ranked.count) results "
+            let who = people.isEmpty ? "" : " · \(people.count) people (AND)"
+            log("window: \"\(text)\"\(filter.map { " in \($0.title)" } ?? "")\(who): \(results.ranked.count) results "
                 + "+ \(results.weaker.count) weaker")
         }
     }
@@ -415,6 +438,9 @@ struct SearchWindowView: View {
             .frame(height: 52)
             KindFilters(search: search, showsCode: model.hasCode,
                         photosAndVideoOnly: model.settings.photosAndVideoOnly)
+            if !search.people.isEmpty {
+                PersonFilters(search: search)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
@@ -499,7 +525,50 @@ struct SearchWindowView: View {
     }
 }
 
-/// All · Screenshots 4 · Images 9 · …: what the query found of each kind; click to see only that kind. With code search
+/// People chips: select one or more. Several selected → only photos with all of them together (AND).
+private struct PersonFilters: View {
+    @Bindable var search: SearchModel
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                Text(search.peopleFilter.count > 1 ? "All of:" : "People")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 2)
+                ForEach(search.people.prefix(24)) { person in
+                    let on = search.peopleFilter.contains(person.id)
+                    Button {
+                        search.togglePerson(person.id)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 10))
+                            Text(person.displayName)
+                                .lineLimit(1)
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(on ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(on ? Color.accentColor : Color.primary.opacity(0.06), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help(person.photoCount == 1 ? "1 photo" : "\(person.photoCount) photos")
+                }
+                if !search.peopleFilter.isEmpty {
+                    Button("Clear") { search.peopleFilter = [] }
+                        .font(.system(size: 11, weight: .medium))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+}
+
+/// All · Photos 4 · Video 9 · …: what the query found of each kind; click to see only that kind. With code search
 /// on, Code after them: a search of code alone (as "code:" is).
 private struct KindFilters: View {
     @Bindable var search: SearchModel
