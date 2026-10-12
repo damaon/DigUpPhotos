@@ -20,7 +20,7 @@ public struct FileRecord: Sendable {
 public final class IndexStore {
     public let directory: URL
     public let db: Database
-    static let schemaVersion: Int64 = 5
+    static let schemaVersion: Int64 = 6
 
     /// Keyword search's tokenizer. Marks (M*) count as letters, so Bengali vowel signs and Arabic harakat stay inside
     /// their words: by default SQLite splits on them ("কলকাতায়" became "কলক", "ত", "য").
@@ -88,6 +88,7 @@ public final class IndexStore {
             if (1...2).contains(version) { try migrateScreenshotText() }
             if (1...3).contains(version) { try migrateVectorNames() }
             if (1...4).contains(version) { try migrateLongFiles() }
+            if (1...5).contains(version) { try migratePeople() }
         }
     }
 
@@ -121,7 +122,16 @@ public final class IndexStore {
             );
             CREATE INDEX segments_file ON segments(file);
             CREATE VIRTUAL TABLE fts USING fts5(\(Self.ftsColumns));
+            \(Self.peopleTablesSQL)
             PRAGMA user_version = \(Self.schemaVersion);
+            """)
+    }
+
+    /// Schema 5 → 6: people and faces for filtering photos by who is in them.
+    private func migratePeople() throws {
+        try db.execute("""
+            \(Self.peopleTablesSQL)
+            PRAGMA user_version = 6;
             """)
     }
 
@@ -243,6 +253,7 @@ public final class IndexStore {
 
     /// The file changed on disk: drop what was extracted from it and queue it again.
     public func requeue(_ id: Int64, as file: Candidate) throws {
+        try deleteFaces(of: id)
         try deleteSegments(of: id, keepingName: true)
         try db.run("""
             UPDATE files SET kind = ?, size = ?, mtime = ?, inode = ?, device = ?, state = 'pending', detail = NULL,
@@ -253,6 +264,7 @@ public final class IndexStore {
 
     /// Extract and embed the file again, as it is (after a better way to read it arrived).
     func requeue(_ id: Int64) throws {
+        try deleteFaces(of: id)
         try deleteSegments(of: id, keepingName: true)
         try db.run("UPDATE files SET state = 'pending', detail = NULL, info = NULL, indexed_at = NULL WHERE id = ?",
                    [.int(id)])
@@ -292,6 +304,8 @@ public final class IndexStore {
     /// Queues every file again and forgets the fingerprint (after the model or settings changed).
     public func resetAll() throws {
         try db.transaction {
+            try db.run("DELETE FROM faces")
+            try db.run("DELETE FROM people")
             try db.run("DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE kind != 'name')")
             try db.run("DELETE FROM segments WHERE kind != 'name'")
             try db.run("UPDATE files SET state = 'pending', detail = NULL, info = NULL, indexed_at = NULL")
