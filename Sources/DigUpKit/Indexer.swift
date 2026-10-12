@@ -370,7 +370,8 @@ public final class Indexer {
                     do {
                         let image = try ImageExtractor.prepare(url, maxPixel: screenshot ? 1536 : 1024,
                                                                minSide: options.minImageSide, to: folder,
-                                                               png: screenshot, scoreQuality: !screenshot)
+                                                               png: screenshot, scoreQuality: !screenshot,
+                                                               detectFaces: !screenshot)
                         let ocr = screenshot ? ImageExtractor.fullImage(url).map(OCR.text(in:)) ?? "" : ""
                         ready.append(ReadyImage(slot: slot, image: image, ocr: ocr))
                     } catch let error as ExtractError {
@@ -498,6 +499,12 @@ public final class Indexer {
         let worker = try fullWorker()
         let vectors = try worker.embedImages(ready.map(\.image.path),
                                              budget: screenshot ? options.screenshotBudget : options.photoBudget)
+        // Face crops: one batch so the model stays warm. Assignment to people happens inside `addFace`.
+        let faceJobs: [(slot: Int, face: DetectedFace)] = ready.flatMap { item in
+            item.image.faces.map { (item.slot, $0) }
+        }
+        let faceVectors = faceJobs.isEmpty ? []
+            : try worker.embedImages(faceJobs.map(\.face.path), budget: FaceDetector.embedBudget)
         try store.db.transaction {
             for (position, item) in ready.enumerated() {
                 let file = batch[item.slot]
@@ -506,6 +513,7 @@ public final class Indexer {
                     results[item.slot] = ("failed", vectors[position].error)
                     continue
                 }
+                try store.deleteFaces(of: file.id)
                 try store.addSegment(file: file.id, kind: .image, modality: .image, vector: vector)
                 // The words on screen are for keyword search: codes, names and errors typed exactly. Meaning comes from
                 // the picture alone; a vector of the words made screenshots outrank better matches (2026-10-08).
@@ -513,15 +521,29 @@ public final class Indexer {
                     try store.addSegment(file: file.id, kind: .ocr, modality: .text, excerpt: excerpt(item.ocr),
                                          text: item.ocr)
                 }
+                var faces = 0
+                for (jobIndex, job) in faceJobs.enumerated() where job.slot == item.slot {
+                    guard let faceVector = faceVectors[jobIndex].vector else { continue }
+                    try store.addFace(file: file.id, box: job.face.box, vector: faceVector)
+                    faces += 1
+                }
                 var info = ["width": "\(item.image.width)", "height": "\(item.image.height)"]
                 info.merge(item.image.capture.infoFields()) { _, new in new }
                 if let quality = item.image.quality {
                     info.merge(quality.infoFields) { _, new in new }
                 }
+                if faces > 0 { info["faces"] = "\(faces)" }
                 if screenshot { info["ocr_chars"] = "\(item.ocr.count)" }
                 try store.finish(file.id, state: "done", info: info)
-                let qualityNote = item.image.quality.map { "quality \($0.score)" }
-                results[item.slot] = ("done", screenshot ? "ocr \(item.ocr.count) chars" : qualityNote)
+                let note: String?
+                if screenshot {
+                    note = "ocr \(item.ocr.count) chars"
+                } else if let quality = item.image.quality {
+                    note = "quality \(quality.score)" + (faces > 0 ? ", \(faces) faces" : "")
+                } else {
+                    note = faces > 0 ? "\(faces) faces" : nil
+                }
+                results[item.slot] = ("done", note)
             }
         }
     }
