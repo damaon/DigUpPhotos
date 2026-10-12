@@ -27,6 +27,7 @@ let usage = """
       --kind K,K           screenshot, image, pdf, doc, audio, video
       --include-code       also index loose source code and data files as documents (outside code projects)
       --include-datasets   don't skip folders that look like datasets
+      --photos-video       index only photos and videos (screenshots, PDFs, documents and audio are skipped)
       --exclude DIR        don't index this folder (repeatable)
       --exclude-ext EXT    don't index files with this extension (repeatable, or comma-separated: "heic,txt")
       --reindex            drop vectors and embed everything again (after changing settings or model)
@@ -93,6 +94,7 @@ struct Arguments {
         options.code = code
         options.includeCode = flags.contains("--include-code")
         options.includeDatasets = flags.contains("--include-datasets")
+        if flags.contains("--photos-video") { options.kinds = FileKind.photosAndVideo }
         options.excludedFolders = (lists["--exclude"] ?? []).map { Self.folderURL($0).path }
         options.excludedExtensions = IndexOptions.extensions((lists["--exclude-ext"] ?? []).joined(separator: ","))
         if let tokens = values["--shot-tokens"].flatMap(Int.init) { options.screenshotBudget = tokens }

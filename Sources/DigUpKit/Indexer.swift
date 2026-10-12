@@ -315,7 +315,7 @@ public final class Indexer {
         /// `chunks`: the ones in `read` (from 0) of the document's `total` (counted up to `IndexOptions.maxChunks` + 1).
         case doc(chunks: [String], read: Range<Int>, total: Int, characters: Int)
         case audio(pieces: [MediaPiece], duration: Double)
-        case video(frames: [MediaPiece], sound: [MediaPiece], duration: Double)
+        case video(frames: [MediaPiece], sound: [MediaPiece], duration: Double, capture: CaptureInfo)
         case code(CodeExtractor.File)
     }
 
@@ -406,6 +406,7 @@ public final class Indexer {
                 prepared.payload = .audio(pieces: pieces, duration: duration)
             case .video:
                 let (interval, window, hop) = (options.frameInterval, options.audioWindow, options.audioHop)
+                let capture = MediaInfo.capture(of: url)
                 let (frames, duration, hasAudio) = try runBlocking {
                     try await VideoExtractor.keyframes(of: url, every: interval, maxPixel: 1024, to: folder)
                 }
@@ -413,7 +414,7 @@ public final class Indexer {
                     ? try runBlocking { try await AudioExtractor.windows(of: url, window: window, hop: hop, to: folder) }
                         .pieces
                     : []
-                prepared.payload = .video(frames: frames, sound: sound, duration: duration)
+                prepared.payload = .video(frames: frames, sound: sound, duration: duration, capture: capture)
             case .code:
                 prepared.payload = .code(try CodeExtractor.read(url, options: options))
             }
@@ -461,8 +462,8 @@ public final class Indexer {
                                      later: later)
             case .audio(let pieces, let duration):
                 results[0] = try audio(batch[0], pieces: pieces, duration: duration)
-            case .video(let frames, let sound, let duration):
-                results[0] = try video(batch[0], frames: frames, sound: sound, duration: duration)
+            case .video(let frames, let sound, let duration, let capture):
+                results[0] = try video(batch[0], frames: frames, sound: sound, duration: duration, capture: capture)
             case .code(let code):
                 results[0] = try self.code(batch[0], code)
             }
@@ -513,7 +514,7 @@ public final class Indexer {
                                          text: item.ocr)
                 }
                 var info = ["width": "\(item.image.width)", "height": "\(item.image.height)"]
-                if let taken = item.image.taken { info["taken"] = taken }
+                info.merge(item.image.capture.infoFields()) { _, new in new }
                 if screenshot { info["ocr_chars"] = "\(item.ocr.count)" }
                 try store.finish(file.id, state: "done", info: info)
                 results[item.slot] = ("done", screenshot ? "ocr \(item.ocr.count) chars" : nil)
@@ -657,8 +658,8 @@ public final class Indexer {
         return ("done", "\(pieces.count) windows, \(Int(duration)) s")
     }
 
-    private func video(_ file: FileRecord, frames: [MediaPiece], sound: [MediaPiece], duration: Double) throws
-        -> (String, String?) {
+    private func video(_ file: FileRecord, frames: [MediaPiece], sound: [MediaPiece], duration: Double,
+                       capture: CaptureInfo) throws -> (String, String?) {
         guard !frames.isEmpty || !sound.isEmpty else {
             try store.finish(file.id, state: "skipped", detail: "no frames or sound")
             return ("skipped", "no frames or sound")
@@ -675,8 +676,10 @@ public final class Indexer {
                 try store.addSegment(file: file.id, kind: .audio, modality: .audio, loc: piece.start,
                                      locEnd: piece.end, vector: embedding.vector)
             }
-            try store.finish(file.id, state: "done", info: ["duration": String(format: "%.1f", duration),
-                                                            "frames": "\(frames.count)", "sound_windows": "\(sound.count)"])
+            var info = ["duration": String(format: "%.1f", duration),
+                        "frames": "\(frames.count)", "sound_windows": "\(sound.count)"]
+            info.merge(capture.infoFields()) { _, new in new }
+            try store.finish(file.id, state: "done", info: info)
         }
         return ("done", "\(frames.count) frames, \(sound.count) sound windows, \(Int(duration)) s")
     }

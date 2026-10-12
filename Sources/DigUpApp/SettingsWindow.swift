@@ -313,13 +313,26 @@ private struct FolderSettings: View {
                 }
             }
             Section {
+                Toggle(isOn: Binding(get: { state.model.settings.photosAndVideoOnly },
+                                     set: { state.app.setPhotosAndVideoOnly($0) })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Photos and videos only")
+                        Text("Skip screenshots, PDFs, documents and standalone audio. DigUp keeps capture dates and "
+                             + "GPS from your camera when they're in the file.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 TypeExclusions(types: state.model.settings.excludedTypes) { state.app.setExcludedTypes($0) }
             } header: {
-                Text("Skip these file types")
+                Text("What to index")
             } footer: {
-                Text("DigUp only reads pictures, PDFs, documents (txt, md, rtf, docx, odt, html), audio and video here; "
-                     + "code is read only in the code folders (the Code tab). Keys, certificates and password files are "
-                     + "never read, nor are hidden folders like ~/.ssh.")
+                Text(state.model.settings.photosAndVideoOnly
+                     ? "Only photos and videos in the folders above are indexed. Code is still optional under the "
+                       + "Code tab. Keys, certificates and password files are never read."
+                     : "DigUp reads pictures, PDFs, documents (txt, md, rtf, docx, odt, html), audio and video here; "
+                       + "code is read only in the code folders (the Code tab). Keys, certificates and password files "
+                       + "are never read, nor are hidden folders like ~/.ssh.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

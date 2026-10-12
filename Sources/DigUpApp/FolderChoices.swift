@@ -13,6 +13,8 @@ final class FolderChoices {
     private(set) var selection: FolderSelection
     /// File types to skip (onboarding sets them here; the estimates leave them out).
     private(set) var types: [String]
+    /// Match the app setting: estimates count only photos and videos when on (ignored for code search).
+    private(set) var photosAndVideoOnly: Bool
     private(set) var estimates: [String: FolderEstimate] = [:]
     /// Folders showing their subfolders.
     var expanded: Set<String> = []
@@ -25,11 +27,13 @@ final class FolderChoices {
     @ObservationIgnored private var runs: [String: Int] = [:]
     @ObservationIgnored private var run = 0
 
-    init(rows: [URL], selection: FolderSelection, types: [String], code: Bool = false) {
+    init(rows: [URL], selection: FolderSelection, types: [String], code: Bool = false,
+         photosAndVideoOnly: Bool = true) {
         self.rows = rows
         self.selection = selection
         self.types = types
         self.code = code
+        self.photosAndVideoOnly = photosAndVideoOnly
         initial = selection
         // A folder with some of its subfolders chosen or skipped starts open, so it shows which.
         expanded = Set(rows.map(\.path).filter { row in
@@ -131,6 +135,13 @@ final class FolderChoices {
         estimate(rows)
     }
 
+    /// Photos & video only vs every DigUp kind; estimates run again when it changes.
+    func setPhotosAndVideoOnly(_ on: Bool) {
+        guard on != photosAndVideoOnly else { return }
+        photosAndVideoOnly = on
+        estimate(rows)
+    }
+
     // MARK: The result
 
     /// The folders to search, without those another one covers.
@@ -210,7 +221,8 @@ final class FolderChoices {
         let left = selection.kept + selection.skipped.filter { skip in
             !rows.contains { $0.path == FolderSelection.parent(skip) }
         }
-        Estimates.run(folders, excluded: left.map(AppSettings.folderURL), types: types, code: code) { [weak self] estimate in
+        Estimates.run(folders, excluded: left.map(AppSettings.folderURL), types: types, code: code,
+                      photosAndVideoOnly: photosAndVideoOnly) { [weak self] estimate in
             guard let self, runs[estimate.folder] == run else { return }
             estimates[estimate.folder] = estimate
         }

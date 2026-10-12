@@ -183,6 +183,15 @@ final class AppController {
         power.setIndexOnBattery(on)
     }
 
+    /// Photos and videos only (default), or every kind DigUp can read. Screenshots, PDFs, documents and audio leave
+    /// the index when this turns on.
+    func setPhotosAndVideoOnly(_ on: Bool) {
+        guard on != model.settings.photosAndVideoOnly else { return }
+        AppSettings.save(photosAndVideoOnly: on)
+        model.settings.photosAndVideoOnly = on
+        engine.setPhotosAndVideoOnly(on)
+    }
+
     /// Asks for folders with the standard open panel (as a sheet when there's a window).
     func pickFolders(for window: NSWindow?, prompt: String = "Add", then done: @escaping ([URL]) -> Void) {
         let panel = NSOpenPanel()

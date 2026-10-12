@@ -117,6 +117,7 @@ nonisolated final class Engine: @unchecked Sendable {
     private var codeChangedSince: Date?
 
     // Any thread, under `lock`
+    private var photosAndVideoOnly: Bool
     private var paused = false
     private var backfillBlocker: String?
     private var roots: [URL]
@@ -160,6 +161,7 @@ nonisolated final class Engine: @unchecked Sendable {
         roots = settings.roots
         excluded = settings.excludedFolders
         excludedTypes = settings.excludedTypes
+        photosAndVideoOnly = settings.photosAndVideoOnly
         codeRoots = settings.codeRoots
         codeExcluded = settings.codeExcluded
         codeQuietSeconds = settings.codeQuietSeconds
@@ -251,20 +253,43 @@ nonisolated final class Engine: @unchecked Sendable {
 
     /// New folders or exclusions: the watcher follows, and the helper restarts with them once its current batch is
     /// done. Files under folders that are no longer chosen, or newly excluded, leave the index.
-    func setFolders(roots: [URL], excluded: [URL], excludedTypes: [String]) {
+    func setFolders(roots: [URL], excluded: [URL], excludedTypes: [String], photosAndVideoOnly: Bool? = nil) {
         lock.withLock {
             self.roots = roots
             self.excluded = excluded
             self.excludedTypes = excludedTypes
+            if let photosAndVideoOnly { self.photosAndVideoOnly = photosAndVideoOnly }
         }
+        let mediaOnly = lock.withLock { self.photosAndVideoOnly }
         log("folders: \(roots.map { tildePath($0.path) })" + (excluded.isEmpty ? "" : " minus \(excluded.map { tildePath($0.path) })")
-            + (excludedTypes.isEmpty ? "" : " · skipping .\(excludedTypes.joined(separator: ", ."))"))
+            + (excludedTypes.isEmpty ? "" : " · skipping .\(excludedTypes.joined(separator: ", ."))")
+            + (mediaOnly ? " · photos & video only" : ""))
         update {
             $0.missingRoots = []
             $0.unreadableRoots = []
             if roots.isEmpty { $0.activity = .idle }
         }
         watchQueue.async { [self] in startWatching() }
+        indexQueue.async { [self] in
+            pruneWanted = true
+            if helper != nil {
+                restartHelper = true
+                send("stop")
+            } else {
+                startHelper()
+            }
+        }
+    }
+
+    /// Photos & video only (on) or every file DigUp can read (off). Changing it restarts the helper so the index
+    /// fingerprint updates and non-matching kinds leave.
+    func setPhotosAndVideoOnly(_ on: Bool) {
+        let changed = lock.withLock { () -> Bool in
+            defer { photosAndVideoOnly = on }
+            return photosAndVideoOnly != on
+        }
+        guard changed else { return }
+        log(on ? "indexing photos and video only" : "indexing all DigUp file kinds")
         indexQueue.async { [self] in
             pruneWanted = true
             if helper != nil {
@@ -453,9 +478,11 @@ nonisolated final class Engine: @unchecked Sendable {
     /// 50 new files on any power source, then the backfill if the power policy allows; it exits a minute after
     /// its last file. Before the model has downloaded it only syncs (file names become searchable) and exits.
     private func startHelper() {
-        let (roots, excluded, types, paused, backfill): ([URL], [URL], [String], Bool, Bool) = lock.withLock {
-            (self.roots, self.excluded, self.excludedTypes, self.paused, backfillBlocker == nil)
-        }
+        let (roots, excluded, types, mediaOnly, paused, backfill): ([URL], [URL], [String], Bool, Bool, Bool) =
+            lock.withLock {
+                (self.roots, self.excluded, self.excludedTypes, self.photosAndVideoOnly, self.paused,
+                 backfillBlocker == nil)
+            }
         let (codeRoots, codeExcluded) = lock.withLock { (self.codeRoots, self.codeExcluded) }
         guard helper == nil, !paused else { return }
         guard !roots.isEmpty || !codeRoots.isEmpty || pruneWanted else {
@@ -467,6 +494,7 @@ nonisolated final class Engine: @unchecked Sendable {
         var arguments = ["index-service", "--index", indexDirectory.path]
         if backfill { arguments.append("--backfill") }
         if pruneWanted { arguments.append("--prune") }
+        if mediaOnly { arguments.append("--photos-video") }
         for folder in excluded { arguments += ["--exclude", folder.path] }
         for type in types { arguments += ["--exclude-ext", type] }
         for folder in codeRoots { arguments += ["--code-root", folder.path] }

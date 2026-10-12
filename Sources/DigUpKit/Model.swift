@@ -6,11 +6,14 @@ public enum FileKind: String, CaseIterable, Sendable, Codable {
     /// Source code, a repo's docs and notebooks: only in the code index (`IndexOptions.code`).
     case code
 
-    /// The order of the first indexing pass: what people look for most comes first.
+    /// The order of the first indexing pass: photos and video first (the photos & video MVP), then the rest.
     static let indexingOrderSQL = """
-        CASE kind WHEN 'screenshot' THEN 0 WHEN 'image' THEN 1 WHEN 'pdf' THEN 2 WHEN 'doc' THEN 3
-        WHEN 'audio' THEN 4 WHEN 'video' THEN 5 ELSE 6 END
+        CASE kind WHEN 'image' THEN 0 WHEN 'video' THEN 1 WHEN 'screenshot' THEN 2 WHEN 'pdf' THEN 3
+        WHEN 'doc' THEN 4 WHEN 'audio' THEN 5 ELSE 6 END
         """
+
+    /// Photos and videos only — DigUp's photos & video MVP default set.
+    public static let photosAndVideo: Set<FileKind> = [.image, .video]
 }
 
 /// One searchable piece of a file.
@@ -67,8 +70,16 @@ public struct IndexOptions: Sendable {
     public var audioHop = 25.0
     public var excludedFolders: [String] = []
     public var excludedExtensions: Set<String> = []
+    /// When non-empty, only these kinds are indexed. The app defaults to photos and video
+    /// (`FileKind.photosAndVideo`); empty keeps DigUp's full set (CLI / evals).
+    public var kinds: Set<FileKind> = []
 
     public init() {}
+
+    /// Whether this index should take a file of this kind.
+    public func indexes(_ kind: FileKind) -> Bool {
+        kinds.isEmpty || kinds.contains(kind)
+    }
 
     /// File extensions as people write them ("HEIC, .txt *.md") → ["heic", "txt", "md"].
     public static func extensions(_ text: String) -> Set<String> {
@@ -81,7 +92,12 @@ public struct IndexOptions: Sendable {
         // "code1": how code is read (stretches of lines, the path in its repo as the title). A change to it is a new
         // number, and every code index is read again.
         if code { return "code1 lines\(codeStretch)" }
-        return "photo\(photoBudget) shot\(screenshotBudget) page\(pageBudget) frame\(frameBudget)/\(frameInterval)s audio\(audioWindow)/\(audioHop)s"
+        // Same string as before when `kinds` is empty (CLI / evals), so a full index isn't rebuilt for nothing.
+        var stamp = "photo\(photoBudget) shot\(screenshotBudget) page\(pageBudget) frame\(frameBudget)/\(frameInterval)s audio\(audioWindow)/\(audioHop)s"
+        if !kinds.isEmpty {
+            stamp = "kinds:" + kinds.map(\.rawValue).sorted().joined(separator: ",") + " " + stamp
+        }
+        return stamp
     }
 }
 

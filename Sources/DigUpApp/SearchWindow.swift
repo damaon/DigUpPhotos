@@ -129,9 +129,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
             toggleQuickLook()
         case 16 where modifiers == .command:   // ⌘Y
             toggleQuickLook()
-        case 18...23 where modifiers == .command:   // ⌘1 all, ⌘2…⌘6 one kind
-            let kinds: [ResultGroupKind?] = [nil] + ResultGroupKind.files
+        case 18...23 where modifiers == .command:   // ⌘1 all, ⌘2… kinds (photos/video by default)
+            let chips = ResultGroupKind.files(photosAndVideoOnly: app.model.settings.photosAndVideoOnly)
+            let kinds: [ResultGroupKind?] = [nil] + chips
             let index = [18, 19, 20, 21, 23, 22].firstIndex(of: Int(event.keyCode)) ?? 0   // key codes of 1…6
+            guard index < kinds.count else { return false }
             search.filter = kinds[index]
         case 26 where modifiers == .command && app.model.hasCode:   // ⌘7: code
             search.filter = .code
@@ -411,7 +413,8 @@ struct SearchWindowView: View {
             }
             .padding(.leading, 78)   // beside the window buttons
             .frame(height: 52)
-            KindFilters(search: search, showsCode: model.hasCode)
+            KindFilters(search: search, showsCode: model.hasCode,
+                        photosAndVideoOnly: model.settings.photosAndVideoOnly)
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
@@ -501,13 +504,16 @@ struct SearchWindowView: View {
 private struct KindFilters: View {
     @Bindable var search: SearchModel
     var showsCode = false
+    var photosAndVideoOnly = true
+
+    private var chips: [ResultGroupKind] { ResultGroupKind.files(photosAndVideoOnly: photosAndVideoOnly) }
 
     var body: some View {
         HStack(spacing: 6) {
             chip(title: "All", symbol: nil, count: nil, selected: search.filter == nil && !search.isCode) {
                 search.filter = nil
             }
-            ForEach(ResultGroupKind.files, id: \.self) { kind in
+            ForEach(chips, id: \.self) { kind in
                 chip(title: kind.title, symbol: kind.symbol, count: search.isCode ? nil : search.counts[kind],
                      selected: search.filter == kind && !search.isCode) {
                     search.filter = search.filter == kind ? nil : kind
@@ -525,7 +531,7 @@ private struct KindFilters: View {
 
     private func chip(title: String, symbol: String?, count: Int?, selected: Bool, shortcut: Int? = nil,
                       action: @escaping () -> Void) -> some View {
-        let number = shortcut ?? (ResultGroupKind.files.firstIndex { $0.title == title }).map { $0 + 2 } ?? 1
+        let number = shortcut ?? (chips.firstIndex { $0.title == title }).map { $0 + 2 } ?? 1
         return Button(action: action) {
             HStack(spacing: 5) {
                 if let symbol { Image(systemName: symbol).font(.system(size: 10.5)) }
@@ -842,7 +848,7 @@ private struct SearchHome: View {
     @State private var kinds: [FileKind: Int] = [:]
 
     private static let examples: [(text: String, kind: ResultGroupKind)] = [
-        ("a screenshot of an error message", .screenshots), ("receipt", .documents), ("whiteboard notes", .images),
+        ("kids on the beach", .images), ("smiling at dinner", .images), ("the part with the drums", .video),
         ("someone laughing", .audio), ("a dog on the beach", .video), ("slides about the budget", .documents),
     ]
 

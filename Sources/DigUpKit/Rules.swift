@@ -110,20 +110,29 @@ public enum Rules {
         if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
         // .ts / .mts are usually TypeScript, which Spotlight calls MPEG-2 video. Only a real transport stream is video.
         if ext == "ts" || ext == "mts" || ext == "m2ts" {
-            if isMPEGTransportStream(url) { return .index(.video) }
-            return options.includeCode ? .index(.doc) : .skip("code or data file")
+            if isMPEGTransportStream(url) { return accept(.video, options) }
+            return options.includeCode ? accept(.doc, options) : .skip("code or data file")
         }
-        if docExtensions.contains(ext) { return .index(.doc) }
-        if codeExtensions.contains(ext) { return options.includeCode ? .index(.doc) : .skip("code or data file") }
+        if docExtensions.contains(ext) { return accept(.doc, options) }
+        if codeExtensions.contains(ext) {
+            return options.includeCode ? accept(.doc, options) : .skip("code or data file")
+        }
         guard let type else { return .ignore }
         if type.conforms(to: .sourceCode) || type.conforms(to: .script) {
-            return options.includeCode ? .index(.doc) : .skip("code or data file")
+            return options.includeCode ? accept(.doc, options) : .skip("code or data file")
         }
-        if type.conforms(to: .pdf) { return .index(.pdf) }
-        if type.conforms(to: .image) { return .index(isScreenshot(url) ? .screenshot : .image) }
-        if type.conforms(to: .movie) { return .index(.video) }
-        if type.conforms(to: .audio) { return .index(.audio) }
+        if type.conforms(to: .pdf) { return accept(.pdf, options) }
+        if type.conforms(to: .image) {
+            return accept(isScreenshot(url) ? .screenshot : .image, options)
+        }
+        if type.conforms(to: .movie) { return accept(.video, options) }
+        if type.conforms(to: .audio) { return accept(.audio, options) }
         return .ignore
+    }
+
+    /// Applies `IndexOptions.kinds` (photos & video MVP skips screenshots, PDFs, documents and audio).
+    private static func accept(_ kind: FileKind, _ options: IndexOptions) -> Classification {
+        options.indexes(kind) ? .index(kind) : .skip("not photos or video")
     }
 
     /// MPEG-TS packets start with 0x47 every 188 bytes (or every 192 with a 4-byte timecode, as in .m2ts / AVCHD .mts).
