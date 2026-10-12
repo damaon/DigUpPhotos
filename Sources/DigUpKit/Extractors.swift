@@ -30,12 +30,15 @@ enum ImageExtractor {
         let width: Int
         let height: Int
         let capture: CaptureInfo
+        /// Local look score for photos (`PhotoQuality`); nil for screenshots.
+        let quality: PhotoQuality?
     }
 
     /// Writes a downscaled copy for the model. ImageIO decodes straight to the thumbnail size, so a 48 MP photo never
     /// gets decoded at full resolution. HEIC, RAW, WebP and friends all work. Capture date and GPS stay with the
-    /// original file's properties (not the thumbnail).
-    static func prepare(_ url: URL, maxPixel: Int, minSide: Int, to folder: URL, png: Bool) throws -> Prepared {
+    /// original file's properties (not the thumbnail). Photos also get a local quality score from that thumbnail.
+    static func prepare(_ url: URL, maxPixel: Int, minSide: Int, to folder: URL, png: Bool,
+                        scoreQuality: Bool = false) throws -> Prepared {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
         else { throw ExtractError.unreadable("not an image") }
         let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
@@ -50,13 +53,15 @@ enum ImageExtractor {
         ]
         guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else { throw ExtractError.unreadable("can't decode image") }
+        let quality = scoreQuality ? PhotoQuality.assess(thumbnail) : nil
         let out = folder.appendingPathComponent(UUID().uuidString + (png ? ".png" : ".jpg"))
         try write(thumbnail, to: out, png: png)
         let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
         let gps = CaptureInfo.gps(from: properties)
         return Prepared(path: out.path, width: width, height: height,
                         capture: CaptureInfo(taken: exif?[kCGImagePropertyExifDateTimeOriginal] as? String,
-                                             latitude: gps?.latitude, longitude: gps?.longitude))
+                                             latitude: gps?.latitude, longitude: gps?.longitude),
+                        quality: quality)
     }
 
     static func fullImage(_ url: URL) -> CGImage? {

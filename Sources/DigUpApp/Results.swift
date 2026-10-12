@@ -121,6 +121,24 @@ struct ResultRow: Identifiable, Equatable {
         return CaptureInfo.format(latitude: lat, longitude: lon)
     }
 
+    /// Local look score for photos (`PhotoQuality`), 0…100.
+    var quality: Int? {
+        guard kind == .image else { return nil }
+        return info["quality"].flatMap(Int.init)
+    }
+
+    /// Short label for details: "Nice · 82", "OK · 54", "Soft · 31".
+    var qualityLabel: String? {
+        guard let quality else { return nil }
+        let word: String
+        switch quality {
+        case 75...: word = "Nice"
+        case 50..<75: word = "OK"
+        default: word = "Soft"
+        }
+        return "\(word) · \(quality)"
+    }
+
     /// "Photo · Oct 1, 2026 · 37.77°N 122.42°W · 1440 × 900 · 2.1 MB", "Video · … · 0:42 · 23 MB"
     var details: String {
         if kind == .code {
@@ -137,6 +155,7 @@ struct ResultRow: Identifiable, Equatable {
         let when = (taken ?? modified).formatted(date: .abbreviated, time: .omitted)
         var parts = [kind.title, when]
         if let capturePlace { parts.append(capturePlace) }
+        if let qualityLabel { parts.append(qualityLabel) }
         if let width = info["width"], let height = info["height"] { parts.append("\(width) × \(height)") }
         // A long file still being read (`Indexer.finishLongFiles`): what isn't read yet can't match.
         let readTo = info["read_to"].flatMap(Int.init)

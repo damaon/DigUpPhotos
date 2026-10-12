@@ -86,6 +86,7 @@ import Testing
         #expect(Searcher.ftsQuery("the screenshot of my payment error") == "\"payment\" OR \"error\"")
         #expect(Searcher.ftsQuery("zebr", prefixLast: true) == "\"zebr\"*")
         #expect(Searcher.ftsQuery("a screenshot") == nil)
+        #expect(Searcher.ftsQuery("best photos of dinner") == "\"dinner\"")
     }
 
     @Test func chunksOverlapAndRespectWords() {
