@@ -31,15 +31,6 @@ nonisolated struct AppSettings: Sendable {
     var encoderIdleSeconds: Double
     /// Onboarding was finished (or closed after choosing folders); it doesn't open by itself again.
     var onboarded: Bool
-    /// Code search: the folders whose code goes into the code index (none: code search is off), and the folders
-    /// skipped in them (`FolderSelection`'s rule, as for `roots`). Searched with "code:" only.
-    var codeRoots: [URL]
-    var codeExcluded: [URL]
-    /// The bundle id of the editor code results open in ("" for each file's default app); nil until one is chosen
-    /// (`CodeEditor.chosen`).
-    var codeEditor: String?
-    /// The code index catches up once the code folders have been quiet this long (`-codeQuietSeconds`, default 60).
-    var codeQuietSeconds: Double
 
     static let supportDirectory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/DigUp")
@@ -73,12 +64,7 @@ nonisolated struct AppSettings: Sendable {
             indexOnBattery: defaults.object(forKey: "indexOnBattery") == nil || defaults.bool(forKey: "indexOnBattery"),
             encoderIdleSeconds: defaults.object(forKey: "encoderIdleSeconds") == nil
                 ? 600 : max(1, defaults.double(forKey: "encoderIdleSeconds")),
-            onboarded: defaults.bool(forKey: "onboarded"),
-            codeRoots: folders(defaults, "codeRoots"),
-            codeExcluded: folders(defaults, "codeExcludedFolders"),
-            codeEditor: defaults.string(forKey: "codeEditor"),
-            codeQuietSeconds: defaults.object(forKey: "codeQuietSeconds") == nil
-                ? 60 : max(1, defaults.double(forKey: "codeQuietSeconds")))
+            onboarded: defaults.bool(forKey: "onboarded"))
     }
 
     /// A list of folders: a plist array, or paths joined with ":" (the form launch arguments use).
@@ -121,15 +107,6 @@ nonisolated struct AppSettings: Sendable {
 
     static func saveOnboarded() {
         defaults.set(true, forKey: "onboarded")
-    }
-
-    static func save(codeRoots: [URL], excluded: [URL]) {
-        defaults.set(codeRoots.map(\.path), forKey: "codeRoots")
-        defaults.set(excluded.map(\.path), forKey: "codeExcludedFolders")
-    }
-
-    static func save(codeEditor: String) {
-        defaults.set(codeEditor, forKey: "codeEditor")
     }
 
     /// Expands "~" and resolves symlinks, so crawled paths match the paths FSEvents reports.

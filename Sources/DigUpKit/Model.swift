@@ -3,8 +3,6 @@ import Foundation
 /// What a file is, for indexing and for grouping results.
 public enum FileKind: String, CaseIterable, Sendable, Codable {
     case screenshot, image, pdf, doc, audio, video
-    /// Source code, a repo's docs and notebooks: only in the code index (`IndexOptions.code`).
-    case code
 
     /// The order of the first indexing pass: photos and video first (the photos & video MVP), then the rest.
     static let indexingOrderSQL = """
@@ -26,8 +24,6 @@ public enum SegmentKind: String, Sendable {
     case chunk            // a piece of a document's text
     case audio            // a window of audio (a file or a video's soundtrack)
     case frame            // a video keyframe
-    case lines            // a stretch of a code file: loc to loc_end are its first and last lines
-    case cells            // a stretch of a notebook: loc to loc_end are its first and last cells, from 1
 }
 
 /// What produced a segment's vector. Scores are normalized per modality because text vectors score higher than
@@ -38,18 +34,6 @@ public enum Modality: String, Sendable, CaseIterable {
 
 /// Indexing settings. Anything that changes vectors is part of `fingerprint`; an index never mixes settings.
 public struct IndexOptions: Sendable {
-    /// This index is the code index: the code folders' source files, their repos' docs and their notebooks, read as
-    /// stretches of whole lines (`CodeExtractor`), and nothing else (`Rules.classifyCode`).
-    public var code = false
-    /// Characters a stretch of code holds at most (whole lines; a longer line is a stretch of its own). On the real-code
-    /// eval (2026-10-09) 1,200 and 3,600 both lost to it: shorter cut functions apart, longer blurred them together.
-    public var codeStretch = 1800
-    /// A bigger source file was made by a program (an amalgamation, data written as code): left out. Hand-written
-    /// files can pass 256 KB (llama.cpp's CPU ops are 426 KB), rarely 1 MB.
-    public var maxCodeBytes = 1 << 20
-    /// A notebook's file holds its outputs too (pictures, tables): bigger than this, it isn't read.
-    public var maxNotebookBytes = 20 << 20
-    public var includeCode = false
     public var includeDatasets = false
     public var minImageSide = 256
     /// Long files are read a step at a time: the first step in the first pass (every file gets searchable sooner), the
@@ -89,9 +73,6 @@ public struct IndexOptions: Sendable {
     }
 
     var fingerprint: String {
-        // "code1": how code is read (stretches of lines, the path in its repo as the title). A change to it is a new
-        // number, and every code index is read again.
-        if code { return "code1 lines\(codeStretch)" }
         // Same string as before when `kinds` is empty (CLI / evals), so a full index isn't rebuilt for nothing —
         // except `qN` when photo quality scoring is on (photos are read again to fill `info.quality`).
         // `qN`: photo quality; `fN`: face crops for people. Bumping either re-reads photos.
@@ -107,25 +88,7 @@ public struct IndexOptions: Sendable {
 public enum Prompts {
     public static func query(_ text: String) -> String { "task: search result | query: \(text)" }
 
-    /// A search of the code index (`CodeQuery`): the model card's prompt for finding code by what it does. Code is
-    /// embedded as any document is (`document`, its path in its repo as the title). Measured against the search prompt
-    /// on the real-code eval (2026-10-09, 27 queries): 24 vs 22 in the top 5, MRR 0.79 vs 0.75.
-    public static func codeQuery(_ text: String) -> String { "task: code retrieval | query: \(text)" }
-
     public static func document(title: String?, text: String) -> String {
         "title: \((title?.isEmpty ?? true) ? "none" : title!) | text: \(text)"
-    }
-}
-
-/// "code: retry with backoff": a search of the code index, and nothing else. Without the prefix a search never sees
-/// code (the code index is a file of its own: `IndexStore.codeFile`).
-public enum CodeQuery {
-    public static let prefix = "code:"
-
-    /// What's typed after "code:" ("" for "code:" alone), or nil for a search that isn't one of code.
-    public static func text(of query: String) -> String? {
-        let trimmed = query.drop { $0.isWhitespace }
-        guard trimmed.count >= prefix.count, trimmed.prefix(prefix.count).lowercased() == prefix else { return nil }
-        return trimmed.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

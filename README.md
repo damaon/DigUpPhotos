@@ -9,7 +9,7 @@ Search the files on your Mac by what's in them, with Google DeepMind's
 <p align="center"><a href="https://github.com/ARahim3/DigUp/releases/latest"><b>Download for Mac</b></a> · Apple Silicon,
 macOS 14 or later · Free and open source</p>
 
-<p align="center"><img src="docs/demo.gif" width="800" alt="DigUp's search panel finding a zebra in a video, a podcast moment, a clause in a lease, a dog on the beach in English, Bengali and Arabic, and code that opens in Zed"></p>
+<p align="center"><img src="docs/demo.gif" width="800" alt="DigUp's search panel finding a zebra in a video, a podcast moment, a clause in a lease, and a dog on the beach in English, Bengali and Arabic"></p>
 
 EmbeddingGemma 2 is the multimodal embedding model Google DeepMind released in October 2026. It puts text, images,
 audio and video into one shared space: a photo of a dog on a beach lands next to the words "a dog on the beach", and a
@@ -28,7 +28,6 @@ whatever kind of file it is. All of it happens on your Mac.
 - "a dog on the beach" finds the photo, and "payment declined error" the screenshot
 - a search in English can find a note written in Bengali, Arabic or any of the model's 100+ languages, and the other
   way around
-- "code: retry a failed call with backoff" finds the function in your projects, if you turn on code search
 
 Exact words count too. Invoice numbers, error codes and names are matched as written, in file names, document text
 and the text inside screenshots, so a search gets both the meaning and the exact string.
@@ -54,7 +53,7 @@ DigUp needs an Apple Silicon Mac with macOS 14 or later (it's tested on macOS 26
 |---|---|
 | ⇧⌘Space | Opens the search panel from any app (you can change it in Settings) |
 | ↓ ↑ | Moves through the results |
-| ↩ | Opens the result: videos and recordings at the moment, PDFs with your words in Preview's search, code in your editor at the line |
+| ↩ | Opens the result: videos and recordings at the moment, PDFs with your words in Preview's search |
 | Space | Quick Look, at the page or moment (once you've moved to a result) |
 | ⌘↩ | Shows it in Finder |
 | ⌘C | Copies the file, to paste anywhere |
@@ -76,9 +75,9 @@ Only the folders you choose:
   match points to its moment
 - video of any length: a frame every few seconds, one per shot, plus the soundtrack the same way as audio
 
-Outside the folders you pick for code search, it never reads code, and inside a code project (a folder with `.git`,
-`package.json` and the like) it reads only screenshots. It never reads keys, certificates, password files, hidden
-folders like `~/.ssh`, app bundles or caches. It skips folders that look like datasets, and never downloads iCloud
+It never reads source code, keys, certificates, password files, hidden
+folders like `~/.ssh`, app bundles or caches. Inside a code project (a folder with `.git`, `package.json` and the
+like) it reads only screenshots. It skips folders that look like datasets, and never downloads iCloud
 files that only live in the cloud. You can skip more folders or file types in Settings. DigUp only reads your files;
 it never changes, moves or uploads them.
 
@@ -86,31 +85,13 @@ The first pass takes a few minutes for a few hundred files and can take an hour 
 happens once, on battery too unless you tell it to wait for a charger, and it pauses in Low Power Mode. After that, a
 new file is searchable a second or two after it lands.
 
-## Code
-
-EmbeddingGemma 2 reads code too, so DigUp can search your projects. Code search is off until you turn it on, in
-Settings → Code or during setup, for the folders you pick. Each repo shows how long reading it takes and how much room
-its index needs. Then start a search with `code:` and say what the code does, or type a name that's in it:
-
-- "code: retry a failed call with backoff" finds the function, whatever it's called
-- "code: refreshAccessToken" goes to the line that defines it, not the places that call it
-- "code: plot how many examples each class has" finds the notebook cell
-
-Results open in your editor at the line: Zed, VS Code, Cursor, Xcode, Sublime Text, JetBrains IDEs and a few more
-(pick one in Settings). Code has an index of its own and never shows up in other searches. DigUp reads source files,
-notebooks (without their outputs) and a repo's own docs. It skips what git ignores, vendored and generated code, data
-files, and anything that looks like a key or a password. While you're working on code, the index catches up a minute
-after things go quiet.
-
-Reading code takes about 20 seconds for a small app, and about 20 minutes and 130 MB of index for all of llama.cpp.
-
 ## How it works
 
 ```
 your folders ─► readers (ImageIO, PDFKit, AVFoundation, and Vision for the text in screenshots)
              ─► EmbeddingGemma 2 on llama.cpp (Metal), in a helper process that quits when it's done
              ─► one SQLite file: a vector for every picture, page, passage, video frame and 30 s of sound,
-                plus a keyword index (code search keeps a second one, for code)
+                plus a keyword index
 your words   ─► the same model's text part (~250 MB, only while you search) ─► nearest vectors + exact words
 ```
 

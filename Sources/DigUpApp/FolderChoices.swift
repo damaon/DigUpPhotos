@@ -13,26 +13,22 @@ final class FolderChoices {
     private(set) var selection: FolderSelection
     /// File types to skip (onboarding sets them here; the estimates leave them out).
     private(set) var types: [String]
-    /// Match the app setting: estimates count only photos and videos when on (ignored for code search).
+    /// Match the app setting: estimates count only photos and videos when on.
     private(set) var photosAndVideoOnly: Bool
     private(set) var estimates: [String: FolderEstimate] = [:]
     /// Folders showing their subfolders.
     var expanded: Set<String> = []
     /// What became of the folders picked last, when it wasn't what was asked ("searched already").
     private(set) var note: String?
-    /// Folders for code search: their estimates are what code search reads there, with the room its index takes.
-    let code: Bool
     @ObservationIgnored private let initial: FolderSelection
     /// Each row's latest estimate run: an answer from an earlier one (before what's skipped changed) is dropped.
     @ObservationIgnored private var runs: [String: Int] = [:]
     @ObservationIgnored private var run = 0
 
-    init(rows: [URL], selection: FolderSelection, types: [String], code: Bool = false,
-         photosAndVideoOnly: Bool = true) {
+    init(rows: [URL], selection: FolderSelection, types: [String], photosAndVideoOnly: Bool = true) {
         self.rows = rows
         self.selection = selection
         self.types = types
-        self.code = code
         self.photosAndVideoOnly = photosAndVideoOnly
         initial = selection
         // A folder with some of its subfolders chosen or skipped starts open, so it shows which.
@@ -159,13 +155,11 @@ final class FolderChoices {
     struct Part {
         var seconds = 0.0
         var later = 0.0
-        var bytes = 0.0
         var files: [FileKind: Int] = [:]
 
         mutating func add(_ estimate: FolderEstimate, _ sign: Double = 1) {
             seconds += sign * estimate.seconds
             later += sign * estimate.laterSeconds
-            bytes += sign * estimate.bytes
             for (kind, count) in estimate.files { files[kind, default: 0] += Int(sign) * count }
         }
     }
@@ -188,17 +182,12 @@ final class FolderChoices {
         var part = Part()
         part.add(estimate)
         for subfolder in estimate.subfolders where !selection.isSearched(subfolder.folder) { part.add(subfolder, -1) }
-        return Part(seconds: max(0, part.seconds), later: max(0, part.later), bytes: max(0, part.bytes),
+        return Part(seconds: max(0, part.seconds), later: max(0, part.later),
                     files: part.files.filter { $0.value > 0 })
     }
 
     var totalSeconds: Double {
         rows.reduce(0) { $0 + (searchedPart(of: $1)?.seconds ?? 0) }
-    }
-
-    /// Code search: about how much room the code index takes for what's checked.
-    var totalBytes: Double {
-        rows.reduce(0) { $0 + (searchedPart(of: $1)?.bytes ?? 0) }
     }
 
     /// The rest of the long PDFs and documents, after the first pass.
@@ -221,7 +210,7 @@ final class FolderChoices {
         let left = selection.kept + selection.skipped.filter { skip in
             !rows.contains { $0.path == FolderSelection.parent(skip) }
         }
-        Estimates.run(folders, excluded: left.map(AppSettings.folderURL), types: types, code: code,
+        Estimates.run(folders, excluded: left.map(AppSettings.folderURL), types: types,
                       photosAndVideoOnly: photosAndVideoOnly) { [weak self] estimate in
             guard let self, runs[estimate.folder] == run else { return }
             estimates[estimate.folder] = estimate
@@ -271,8 +260,6 @@ private struct FolderRow: View {
 
     static let laterHelp = "The first pass takes this long. Long PDFs and documents get their first pages in it, "
         + "and the rest afterwards, once everything else is in."
-    static let codeHelp = "How long reading this code takes, once, and about how much room its index needs. After "
-        + "that, only what changes is read again."
 
     /// Subfolders shown before "Show N more".
     private static let shortList = 8
@@ -354,7 +341,7 @@ private struct FolderRow: View {
                     KindCounts(counts: part.files)
                 } else {
                     Text(estimate == nil ? tildePath(row.path)
-                         : estimate!.files.isEmpty ? (choices.code ? "No code here" : "Nothing to search here yet")
+                         : estimate!.files.isEmpty ? "Nothing to search here yet"
                          : "Nothing to search in the subfolders checked")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -368,17 +355,13 @@ private struct FolderRow: View {
                     Text(estimate.files.isEmpty ? "—" : approximately(part?.seconds ?? 0))
                         .font(.system(size: 12, weight: .medium).monospacedDigit())
                         .foregroundStyle(mark == .off ? .tertiary : .primary)
-                    if choices.code, let bytes = part?.bytes, bytes > 0 {
-                        Text(roughBytes(bytes))
-                            .font(.system(size: 10).monospacedDigit())
-                            .foregroundStyle(.tertiary)
-                    } else if let later = part?.later, later >= 30 {
+                    if let later = part?.later, later >= 30 {
                         Text("+ \(roughDuration(later)) later")
                             .font(.system(size: 10).monospacedDigit())
                             .foregroundStyle(.tertiary)
                     }
                 }
-                .help(choices.code ? Self.codeHelp : Self.laterHelp)
+                .help(Self.laterHelp)
             } else {
                 ProgressView().controlSize(.small)
             }
@@ -414,11 +397,10 @@ private struct SubfolderRow: View {
                 .opacity(on ? 1 : 0.6)
             Spacer(minLength: 8)
             Text(approximately(subfolder.seconds)
-                 + (choices.code ? " · \(roughBytes(subfolder.bytes))"
-                    : subfolder.laterSeconds >= 30 ? " + \(roughDuration(subfolder.laterSeconds)) later" : ""))
+                 + (subfolder.laterSeconds >= 30 ? " + \(roughDuration(subfolder.laterSeconds)) later" : ""))
                 .font(.system(size: 11, weight: .medium).monospacedDigit())
                 .foregroundStyle(on ? .secondary : .tertiary)
-                .help(choices.code ? FolderRow.codeHelp : FolderRow.laterHelp)
+                .help(FolderRow.laterHelp)
         }
         .padding(.leading, 56)
         .padding(.trailing, 12)

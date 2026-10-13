@@ -10,10 +10,8 @@ struct ResultRow: Identifiable, Equatable {
     let kind: FileKind
     let segment: SegmentKind
     let segmentID: Int64
-    let loc: Double?        // PDF page, seconds into audio or video, or a stretch of code's first line
+    let loc: Double?        // PDF page, or seconds into audio or video
     let locEnd: Double?
-    /// Code: the line to open at (where the name is defined, or the first line with the query's words).
-    let focus: Double?
     let excerpt: String?    // matched words are wrapped in « »
     let matchedMeaning: Bool
     let matchedWords: Bool
@@ -27,19 +25,12 @@ struct ResultRow: Identifiable, Equatable {
         id = hit.path
         url = URL(fileURLWithPath: hit.path)
         name = url.lastPathComponent
-        // Code says where it is in its repo: "billing/payments".
-        if hit.kind == .code, let repo = hit.info["repo"], hit.path.hasPrefix(repo + "/") {
-            let parent = (repo as NSString).deletingLastPathComponent
-            folder = String(url.deletingLastPathComponent().path.dropFirst(parent.count + 1))
-        } else {
-            folder = tildePath(url.deletingLastPathComponent().path)
-        }
+        folder = tildePath(url.deletingLastPathComponent().path)
         kind = hit.kind
         segment = hit.segment
         segmentID = hit.segmentID
         loc = hit.loc
         locEnd = hit.locEnd
-        focus = hit.focus
         excerpt = hit.excerpt.flatMap { $0.isEmpty ? nil : $0 }
         matchedMeaning = (hit.z ?? 0) >= 2
         matchedWords = hit.keywordRank != nil
@@ -65,26 +56,13 @@ struct ResultRow: Identifiable, Equatable {
         return words
     }
 
-    /// The page or moment that matched, as a badge: "p. 3", "0:06", "♪ 0:25" (a video's sound), "L12–40" (code).
+    /// The page or moment that matched, as a badge: "p. 3", "0:06", "♪ 0:25" (a video's sound).
     var place: String? {
         guard let loc else { return nil }
         switch segment {
         case .page, .pageImage: return "p. \(Int(loc))"
         case .frame: return Self.clock(loc)
         case .audio: return kind == .video ? "♪ \(Self.clock(loc))" : Self.clock(loc)
-        case .lines: return Int(loc) == Int(locEnd ?? loc) ? "L\(Int(loc))" : "L\(Int(loc))–\(Int(locEnd ?? loc))"
-        case .cells: return span
-        default: return nil
-        }
-    }
-
-    /// The lines (or a notebook's cells) of code that matched: "lines 12–40", "cell 3".
-    var span: String? {
-        guard let loc else { return nil }
-        let (first, last) = (Int(loc), Int(locEnd ?? loc))
-        switch segment {
-        case .lines: return first == last ? "line \(first)" : "lines \(first)–\(last)"
-        case .cells: return first == last ? "cell \(first)" : "cells \(first)–\(last)"
         default: return nil
         }
     }
@@ -108,7 +86,6 @@ struct ResultRow: Identifiable, Equatable {
         case .pageImage: return "Matches \(page)"
         case .chunk: return "Matches its text"
         case .name: return "Matches its name"
-        case .lines, .cells: return "Matches \(span ?? "the code")"
         }
     }
 
@@ -141,17 +118,6 @@ struct ResultRow: Identifiable, Equatable {
 
     /// "Photo · Oct 1, 2026 · 37.77°N 122.42°W · 1440 × 900 · 2.1 MB", "Video · … · 0:42 · 23 MB"
     var details: String {
-        if kind == .code {
-            var parts = [CodeExtractor.language(of: url.path)]
-            if let cells = info["cells"].flatMap(Int.init) {
-                parts.append(cells == 1 ? "1 cell" : "\(cells) cells")
-            } else if let lines = info["lines"].flatMap(Int.init) {
-                parts.append(lines == 1 ? "1 line" : "\(lines.formatted()) lines")
-            }
-            parts.append(modified.formatted(date: .abbreviated, time: .omitted))
-            if size > 0 { parts.append(bytes(size)) }
-            return parts.joined(separator: " · ")
-        }
         let when = (taken ?? modified).formatted(date: .abbreviated, time: .omitted)
         var parts = [kind.title, when]
         if let capturePlace { parts.append(capturePlace) }
@@ -203,8 +169,6 @@ struct ResultRow: Identifiable, Equatable {
 /// How results are grouped in the panel, and the kind filters in the window.
 enum ResultGroupKind: CaseIterable {
     case screenshots, images, documents, video, audio
-    /// Code search's results (the code index; a search of it never shows anything else).
-    case code
 
     /// Photos & video MVP: the window's kind filters when DigUp indexes only pictures and video.
     static let photosAndVideo: [ResultGroupKind] = [.images, .video]
@@ -225,7 +189,6 @@ enum ResultGroupKind: CaseIterable {
         case .pdf, .doc: self = .documents
         case .video: self = .video
         case .audio: self = .audio
-        case .code: self = .code
         }
     }
 
@@ -236,7 +199,6 @@ enum ResultGroupKind: CaseIterable {
         case .documents: "Documents"
         case .video: "Video"
         case .audio: "Audio"
-        case .code: "Code"
         }
     }
 
@@ -247,7 +209,6 @@ enum ResultGroupKind: CaseIterable {
         case .documents: FileKind.doc.symbol
         case .video: FileKind.video.symbol
         case .audio: FileKind.audio.symbol
-        case .code: FileKind.code.symbol
         }
     }
 
@@ -258,7 +219,6 @@ enum ResultGroupKind: CaseIterable {
         case .documents: [.pdf, .doc]
         case .video: [.video]
         case .audio: [.audio]
-        case .code: [.code]
         }
     }
 }
@@ -314,7 +274,6 @@ extension FileKind {
         case .doc: "Document"
         case .audio: "Audio"
         case .video: "Video"
-        case .code: "Code"
         }
     }
 
@@ -326,7 +285,6 @@ extension FileKind {
         case .doc: "doc.text"
         case .audio: "waveform"
         case .video: "film"
-        case .code: "chevron.left.forwardslash.chevron.right"
         }
     }
 }

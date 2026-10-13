@@ -4,8 +4,7 @@ import Observation
 import SwiftUI
 
 /// First launch, in four steps: what DigUp does, which folders to search (with how long the first pass takes), the
-/// hotkey (try it), and done; a fifth, code search, when there are folders with code on the Mac (it stays off unless
-/// you turn it on there). The model downloads from Get Started on, shown at the bottom of every later step, and
+/// hotkey (try it), and done. The model downloads from Get Started on, shown at the bottom of every later step, and
 /// the chosen folders start indexing as soon as you continue past them.
 final class OnboardingController: NSObject, NSWindowDelegate {
     let state: OnboardingState
@@ -60,18 +59,12 @@ final class OnboardingController: NSObject, NSWindowDelegate {
 @Observable
 final class OnboardingState {
     enum Step: Int, CaseIterable {
-        case welcome, folders, code, shortcut, ready
+        case welcome, folders, shortcut, ready
     }
 
     private(set) var step = Step.welcome
     /// The folders to search, with their estimates and subfolders; applied on Continue.
     let folders: FolderChoices
-    /// Code search's folders, offered when the Mac has folders with code (`CodeFolders`); applied on Continue when
-    /// `searchCode` is on.
-    let codeFolders: FolderChoices
-    var searchCode = false {
-        didSet { if searchCode { codeFolders.startEstimates() } }
-    }
     /// You pressed the hotkey on the shortcut step.
     private(set) var hotkeyWorked = false
     var launchAtLogin: Bool
@@ -95,13 +88,6 @@ final class OnboardingState {
         }
         folders = FolderChoices(rows: candidates + others, selection: selection, types: settings.excludedTypes,
                                 photosAndVideoOnly: settings.photosAndVideoOnly)
-        let codeCandidates = CodeFolders.candidates(searched: [])
-        codeFolders = FolderChoices(rows: codeCandidates,
-                                    selection: FolderSelection(chosen: settings.codeRoots.isEmpty
-                                                                   ? codeCandidates.map(\.path)
-                                                                   : settings.codeRoots.map(\.path)),
-                                    types: [], code: true, photosAndVideoOnly: false)
-        searchCode = !settings.codeRoots.isEmpty
         launchAtLogin = app.launchesAtLogin || app.suggestsLaunchAtLogin
         indexOnBattery = settings.indexOnBattery
         skippedTypesText = settings.excludedTypes.joined(separator: ", ")
@@ -110,10 +96,8 @@ final class OnboardingState {
     var model: AppModel { app.model }
     var download: ModelDownload { app.download }
 
-    /// The steps this Mac gets: code search's only when there's code to offer.
-    var steps: [Step] {
-        Step.allCases.filter { $0 != .code || !codeFolders.rows.isEmpty }
-    }
+    /// The steps this Mac gets.
+    var steps: [Step] { Step.allCases }
 
     /// The folders it offers: the usual home folders that exist, or `-onboardingLocations a:b:c` (tests point it at
     /// the testbed, never at real folders).
@@ -144,13 +128,6 @@ final class OnboardingState {
             // Indexing starts now (file names first; meaning once the model is in), while you set up the rest.
             folders.setTypes(skippedTypesText)
             app.applyFolders(folders.roots, excluded: folders.skipped, types: folders.types)
-            go(to: steps.contains(.code) ? .code : .shortcut)
-        case .code:
-            if searchCode, !codeFolders.roots.isEmpty {
-                app.applyCodeFolders(codeFolders.roots, excluded: codeFolders.skipped)
-            } else if !searchCode, model.hasCode {
-                app.applyCodeFolders([], excluded: [])
-            }
             go(to: .shortcut)
         case .shortcut:
             go(to: .ready)
@@ -202,15 +179,7 @@ final class OnboardingState {
     var isLoaded: Bool {
         switch step {
         case .folders: folders.estimatesDone
-        case .code: !searchCode || codeFolders.estimatesDone
         default: true
-        }
-    }
-
-    func addCodeFolders(from window: NSWindow?) {
-        app.pickFolders(for: window) { [weak self] picked in
-            guard !picked.isEmpty else { return }
-            self?.codeFolders.add(picked)
         }
     }
 }
@@ -227,7 +196,6 @@ struct OnboardingView: View {
                 switch state.step {
                 case .welcome: WelcomeStep()
                 case .folders: FoldersStep(state: state)
-                case .code: CodeStep(state: state)
                 case .shortcut: ShortcutStep(state: state)
                 case .ready: ReadyStep(state: state)
                 }
@@ -255,8 +223,8 @@ struct OnboardingView: View {
                 DownloadStatus(download: state.download)
             }
             Spacer(minLength: 8)
-            if state.step == .folders || state.step == .code && state.searchCode {
-                Text(state.step == .code ? codeSummary : foldersSummary)
+            if state.step == .folders {
+                Text(foldersSummary)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -277,18 +245,9 @@ struct OnboardingView: View {
         switch state.step {
         case .welcome: "Get Started"
         case .folders: "Continue"
-        case .code: "Continue"
         case .shortcut: "Continue"
         case .ready: "Done"
         }
-    }
-
-    private var codeSummary: String {
-        guard !state.codeFolders.roots.isEmpty else { return "Check the folders with your code" }
-        guard state.codeFolders.estimatesDone else { return "Looking at your code…" }
-        let seconds = state.codeFolders.totalSeconds
-        return (seconds < 1 ? "Under a second" : "About \(roughDuration(seconds))")
-            + ", \(roughBytes(state.codeFolders.totalBytes))"
     }
 
     private var foldersSummary: String {
@@ -510,49 +469,6 @@ private struct SkipChoices: View {
         .padding(.top, 4)
         .onAppear {
             expanded = !state.folders.selection.effectiveSkips.isEmpty || !state.folders.types.isEmpty
-        }
-    }
-}
-
-/// Code search, if you want it: a switch (off until you turn it on), then the folders with code, each opening to its
-/// repos with how long reading them takes and the room their index needs, and the editor results open in.
-private struct CodeStep: View {
-    @Bindable var state: OnboardingState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            StepTitle(title: "Search your code too?",
-                      subtitle: "DigUp can find code by what it does: type code: in the search panel, as in "
-                          + "“code: retry with backoff”. It gets an index of its own and never shows up in other "
-                          + "searches. You can turn it on later in Settings → Code.")
-            SwitchRow(title: "Search my code", detail: "Off unless you turn it on.", isOn: $state.searchCode)
-                .padding(14)
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.04)))
-            if state.searchCode {
-                ScrollView {
-                    VStack(spacing: 6) {
-                        FolderList(choices: state.codeFolders, addTitle: "Add Folder…") {
-                            state.addCodeFolders(from: NSApp.keyWindow)
-                        }
-                        CodeFolderNote().padding(.top, 4)
-                    }
-                }
-                .scrollBounceBehavior(.basedOnSize)
-                HStack {
-                    Text("Open code in")
-                    Picker("Open code in", selection: Binding(get: { CodeEditor.current.id },
-                                                              set: { state.app.setCodeEditor($0) })) {
-                        ForEach(CodeEditor.installed) { editor in Text(editor.name).tag(editor.id) }
-                        Text(CodeEditor.defaultApp.name).tag(CodeEditor.defaultApp.id)
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                    Spacer()
-                }
-                .font(.system(size: 12))
-                .padding(.bottom, 12)
-            }
-            Spacer(minLength: 0)
         }
     }
 }

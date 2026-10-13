@@ -25,17 +25,12 @@ struct SearchPanelView: View {
 
     private var header: some View {
         HStack(spacing: 11) {
-            // A search of code shows it: the field's magnifier becomes code's mark.
-            Image(systemName: controller.isCode ? FileKind.code.symbol : "magnifyingglass")
-                .font(.system(size: controller.isCode ? 17 : 20, weight: .semibold))
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(Brand.gradient)
                 .frame(width: 24)
-                .help(controller.isCode ? "Searching your code" : "")
-            // With code search on, one example is code's: nothing else in the panel shows "code:".
             SearchField(text: $controller.query, fontSize: 22,
-                        placeholder: controller.model.hasCode
-                            ? "Describe it: “zebra in a video”, “code: retry with backoff”…"
-                            : "Describe it: “payment error screenshot”, “zebra in a video”…") {
+                        placeholder: "Describe it: “payment error screenshot”, “zebra in a video”…") {
                 controller.field = $0
             }
             if controller.phase == .words, controller.encoder == .starting {
@@ -56,9 +51,7 @@ struct SearchPanelView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if controller.phase == .codeHint || controller.phase == .codeOff {
-            CodeHint(controller: controller)
-        } else if controller.results.isEmpty {
+        if controller.results.isEmpty {
             VStack(spacing: 8) {
                 if controller.phase == .words {
                     Text("Searching…").foregroundStyle(.secondary)
@@ -67,9 +60,6 @@ struct SearchPanelView: View {
                     Text("DigUp only searches the folders you pick.").foregroundStyle(.secondary)
                     Button("Choose Folders…") { controller.chooseFolders() }
                         .padding(.top, 4)
-                } else if controller.isCode {
-                    Text("No good matches in your code").font(.system(size: 15, weight: .semibold))
-                    Text("Try saying what the code does, or a name that's in it.").foregroundStyle(.secondary)
                 } else {
                     Text("No good matches").font(.system(size: 15, weight: .semibold))
                     Text("Try what you'd see or hear in it, or words you remember from it.")
@@ -116,14 +106,9 @@ struct SearchPanelView: View {
         .frame(height: 30)
     }
 
-    /// The keys, saying where ↩ and Space go for a page or moment: "↩ Open at 0:06   ␣ Quick Look at 0:06", and for
-    /// code, at which line: "↩ Open in Zed at line 12".
+    /// The keys, saying where ↩ and Space go for a page or moment: "↩ Open at 0:06   ␣ Quick Look at 0:06".
     private var keysText: String {
         let row = controller.selectedRow
-        if let row, row.kind == .code {
-            let line = row.segment == .lines ? " at line \(row.codeLine)" : ""
-            return "↩ \(row.openTitle)\(line)   ⌘↩ Reveal   ␣ Quick Look   ⌘C Copy"
-        }
         let place = row?.jump.map { " at \($0)" } ?? ""
         return "↩ \(row?.openTitle ?? "Open")   ⌘↩ Reveal   ␣ Quick Look\(place)   ⌘C Copy"
     }
@@ -135,16 +120,11 @@ struct SearchPanelView: View {
             return controller.encoder == .starting ? "Matching words; meaning search is warming up…" : "Matching words…"
         case .wordsOnly:
             return controller.model.meaningUnavailable ?? "Words only: meaning search isn't available"
-        case .codeHint, .codeOff:
-            return controller.phase == .codeOff ? "Code search is off" : "Searching your code"
         case .meaning, .empty:
-            if controller.isCode, let indexing = controller.model.status.code.indexing, indexing.total > 0 {
-                return "Still reading code (\(Int(Double(indexing.done) / Double(indexing.total) * 100))%): some isn't in yet"
-            }
-            if !controller.isCode, let caveat = controller.model.resultsCaveat { return caveat }
+            if let caveat = controller.model.resultsCaveat { return caveat }
             let count = controller.results.strongRows.count
             let weaker = controller.results.weaker.count
-            return (count == 1 ? "1 result" : "\(count) results") + (controller.isCode ? " in your code" : "")
+            return (count == 1 ? "1 result" : "\(count) results")
                 + (weaker > 0 ? " · \(weaker) weaker" : "")
         }
     }
@@ -238,7 +218,7 @@ private struct PanelRow: View {
     var body: some View {
         HStack(spacing: 10) {
             // Code's thumbnail would be a page of tiny text: its file type's icon says more.
-            ThumbnailView(url: row.url, side: 36, iconOnly: row.kind == .code)
+            ThumbnailView(url: row.url, side: 36)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(row.title)
@@ -247,7 +227,7 @@ private struct PanelRow: View {
                         .truncationMode(.middle)
                     if let place = row.place { PlaceBadge(text: place) }
                 }
-                if let excerpt = row.excerpt, row.matchedWords, row.kind != .code {
+                if let excerpt = row.excerpt, row.matchedWords {
                     Text(highlighted(excerpt, size: 11))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -503,46 +483,3 @@ final class FileDragView: NSView, NSDraggingSource {
     }
 }
 
-/// "code:" typed: what to type after it, or (without code folders) how to turn code search on.
-private struct CodeHint: View {
-    let controller: SearchPanelController
-
-    static let examples = ["code: retry a request with backoff", "code: where the settings are saved",
-                           "code: parse the command line options"]
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: FileKind.code.symbol)
-                .font(.system(size: 26, weight: .medium))
-                .foregroundStyle(Brand.gradient)
-            if controller.phase == .codeOff {
-                Text("Code search is off").font(.system(size: 15, weight: .semibold))
-                Text("DigUp can find code by what it does, in the folders you pick. Code gets an index of its own "
-                     + "and never shows up in other searches.")
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
-                Button("Choose Code Folders…") { controller.setUpCodeSearch() }
-                    .padding(.top, 4)
-            } else {
-                Text("Search your code").font(.system(size: 15, weight: .semibold))
-                Text("Say what the code does, or type a name that's in it.").foregroundStyle(.secondary)
-                VStack(spacing: 6) {
-                    ForEach(Self.examples, id: \.self) { example in
-                        Button { controller.tryExample(example) } label: {
-                            Text(example)
-                                .font(.system(size: 12, design: .monospaced))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(Capsule().fill(Brand.leaf.opacity(0.12)))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.top, 6)
-            }
-        }
-        .font(.system(size: 13))
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}

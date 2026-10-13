@@ -177,7 +177,7 @@ enum MediaInfo {
             let identifier = item.identifier
             if identifier == .commonIdentifierCreationDate || identifier == .quickTimeMetadataCreationDate,
                taken == nil, let date = try? await item.load(.dateValue) {
-                taken = iso8601.string(from: date)
+                taken = iso8601String(from: date)
             } else if identifier == .commonIdentifierLocation || identifier == .quickTimeMetadataLocationISO6709,
                       latitude == nil,
                       let text = try? await item.load(.stringValue),
@@ -189,14 +189,15 @@ enum MediaInfo {
         if taken == nil,
            let item = try? await asset.load(.creationDate),
            let date = try? await item.load(.dateValue) {
-            taken = iso8601.string(from: date)
+            taken = iso8601String(from: date)
         }
         return CaptureInfo(taken: taken, latitude: latitude, longitude: longitude)
     }
 
-    private static let iso8601: ISO8601DateFormatter = {
+    /// A fresh formatter each call: `ISO8601DateFormatter` is not `Sendable`, and capture runs off the main thread.
+    private static func iso8601String(from date: Date) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
+        return formatter.string(from: date)
+    }
 }

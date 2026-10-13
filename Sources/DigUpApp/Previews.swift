@@ -10,8 +10,8 @@ import SwiftUI
 final class Previews {
     static let shared = Previews()
     private let cache = NSCache<NSString, NSImage>()
-    /// The text of a document's passage or a stretch of code (`Engine.text(ofSegment:code:)`), set when the app starts.
-    var passage: (Int64, Bool) async -> String? = { _, _ in nil }
+    /// The text of a document's passage (`Engine.text(ofSegment:)`), set when the app starts.
+    var passage: (Int64) async -> String? = { _ in nil }
 
     init() {
         cache.totalCostLimit = 48 << 20
@@ -192,10 +192,6 @@ struct PreviewPicture: View {
             if row.kind == .audio {
                 AudioMoment(row: row)
                     .frame(height: min(size.height, 150))
-            } else if row.kind == .code {
-                CodeLines(row: row)
-                    .frame(maxWidth: size.width, maxHeight: size.height)
-                    .onTapGesture(count: 2, perform: open)
             } else if row.segment == .chunk {
                 Passage(row: row)
                     .frame(maxWidth: size.width, maxHeight: size.height)
@@ -239,7 +235,7 @@ struct PreviewPicture: View {
         // without its controls.
         .onDisappear { if PreviewPlayback.shared.isCurrent(row) { PreviewPlayback.shared.stop() } }
         .task(id: Previews.shared.key(row, max(size.width, size.height))) {
-            guard row.segment != .chunk, row.kind != .code else { return }
+            guard row.segment != .chunk else { return }
             let side = max(size.width, size.height)
             image = Previews.shared.cached(row, side: side)
             loaded = image != nil
@@ -329,8 +325,7 @@ struct WhyItMatched: View {
                     .foregroundStyle(row.matchedMeaning ? AnyShapeStyle(Brand.gradient) : AnyShapeStyle(.secondary))
             }
             .font(.system(size: 12, weight: .medium))
-            // Code shows its lines above, the words marked there.
-            if let excerpt = row.excerpt, row.kind != .code {
+            if let excerpt = row.excerpt {
                 Text(highlighted(excerpt, size: 12))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
@@ -386,7 +381,7 @@ struct Passage: View {
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.primary.opacity(0.12),
                                                                                     lineWidth: 0.5))
         .shadow(color: .black.opacity(0.15), radius: 5, y: 2)
-        .task(id: row.previewKey) { text = await Previews.shared.passage(row.segmentID, false) }
+        .task(id: row.previewKey) { text = await Previews.shared.passage(row.segmentID) }
     }
 
     /// "Part 2 of 5", when the document has more than one.
@@ -430,87 +425,3 @@ struct Passage: View {
     }
 }
 
-/// The lines of code that matched, numbered as in the file, in a monospaced card like an editor's: the query's words
-/// are marked, the line it opens at is lit, and the card opens scrolled to it. Long lines run past the edge.
-struct CodeLines: View {
-    let row: ResultRow
-    @State private var text: String?
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(Array(lines.enumerated()), id: \.offset) { offset, line in
-                        HStack(alignment: .firstTextBaseline, spacing: 10) {
-                            Text(number(offset))
-                                .foregroundStyle(.tertiary)
-                                .frame(width: gutter, alignment: .trailing)
-                            Text(marked(line))
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                        }
-                        .padding(.vertical, 0.5)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(isFocus(offset) ? Brand.amber.opacity(0.16) : Color.clear)
-                        .id(offset)
-                    }
-                }
-                .font(.system(size: 11, design: .monospaced))
-                .padding(.vertical, 10)
-                .padding(.horizontal, 8)
-            }
-            .scrollIndicators(.never)
-            .onChange(of: text) {
-                if let target = focusOffset ?? firstMarked, target > 3 { proxy.scrollTo(target - 2, anchor: .top) }
-            }
-        }
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.045)))
-        .overlay(alignment: .bottomTrailing) {
-            if let span = row.span { PlaceBadge(text: span, onImage: true).padding(8) }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.primary.opacity(0.1),
-                                                                                    lineWidth: 0.5))
-        .task(id: row.previewKey) { text = await Previews.shared.passage(row.segmentID, true) }
-    }
-
-    private var lines: [String] {
-        (text ?? "").split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" })
-            .map { $0.replacingOccurrences(of: "\t", with: "    ") }
-    }
-
-    /// A stretch's lines are the file's; a notebook's stretch has no numbers of its own, so its lines count from 1.
-    private var firstNumber: Int { row.segment == .lines ? Int(row.loc ?? 1) : 1 }
-
-    private func number(_ offset: Int) -> String { "\(firstNumber + offset)" }
-
-    private var gutter: CGFloat { CGFloat(String(firstNumber + max(lines.count, 1)).count) * 7 + 2 }
-
-    /// The line it opens at, in the stretch.
-    private var focusOffset: Int? {
-        guard row.segment == .lines, let focus = row.focus else { return nil }
-        return Int(focus) - firstNumber
-    }
-
-    private func isFocus(_ offset: Int) -> Bool { offset == focusOffset }
-
-    private var words: [String] {
-        Array(Set((row.foundWords + row.terms).filter { $0.count >= 2 }))
-    }
-
-    private var firstMarked: Int? {
-        lines.firstIndex { line in words.contains { !SearchText.matches(of: $0, in: line).isEmpty } }
-    }
-
-    private func marked(_ line: String) -> AttributedString {
-        var result = AttributedString(line.isEmpty ? " " : line)
-        for word in words {
-            for found in SearchText.matches(of: word, in: line) {
-                guard let range = Range(found, in: result) else { continue }
-                result[range].backgroundColor = Color(red: 1, green: 0.86, blue: 0.2)
-                result[range].foregroundColor = .black
-            }
-        }
-        return result
-    }
-}

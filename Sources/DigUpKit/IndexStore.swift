@@ -45,11 +45,8 @@ public final class IndexStore {
     private var scopeSQL = ""
     private var scopeValues: [SQLValue] = []
 
-    /// The main index's file in the index folder.
+    /// The index's file in the index folder.
     public static let mainFile = "index.sqlite"
-    /// The code index (`IndexOptions.code`) is a file of its own beside it: code search never moves the rest (its
-    /// meaning scale, its keyword results, the vectors search keeps in memory), and turning it off deletes one file.
-    public static let codeFile = "code.sqlite"
 
     public let file: URL
 

@@ -32,16 +32,14 @@ import SwiftUI
 ///     -debugQuit YES          quit after that
 ///     -debugPauseAfter S / -debugResumeAfter S   press Pause / Resume S seconds after launch
 ///     -debugFolders a:b -debugFoldersAfter S     choose these folders S seconds after launch (as Settings would)
-///     -debugCodeFolders a:b|off -debugCodeFoldersAfter S   the same for code search's folders ("off" turns it off)
 ///     -debugIcon <png>        draw the menubar icon idle, at 0%, 42% and 90%, paused, and with an update waiting
 ///     -debugHotkeyCheck a,b   log what the shortcut recorder would say about each combination ("cmd+space"…)
 ///     -debugMenuView <png>    draw the top of the menu (status, detail, progress) into <png>, after
 ///                             -debugMenuViewAfter seconds
 ///     -debugReshow N          after the query's final results, hide and show the panel N times (logs show times)
 ///     -debugWindow PAGE       open a window instead of the panel and snapshot it: search (with -debugQuery),
-///                             settings:general|folders|code|storage, settings:add (Folders with Add Folders open),
-///                             settings:addcode (Code with its folders' sheet open),
-///                             onboarding:welcome|folders|code|shortcut|ready
+///                             settings:general|folders|storage, settings:add (Folders with Add Folders open),
+///                             onboarding:welcome|folders|shortcut|ready
 ///                             (-debugCloseWindow YES closes it afterwards, to measure what closing gives back)
 ///     -debugChoices "open:real;click:real/videos;add:<path>"   before the snapshot, act on the folder list of
 ///                             onboarding's folder step or of Add Folders, then log what it would apply. Actions,
@@ -57,8 +55,6 @@ import SwiftUI
 ///     -debugOnboarding auto   first launch, start to finish: snapshot each onboarding step (<snapshot>-1-welcome.png
 ///                             …), continue through it (the download starts, the folders apply), wait for the model
 ///                             and the first index, then search for -debugQuery in the panel (<snapshot>-N-panel.png)
-///     -debugSearchCode YES    on onboarding's code step (or -debugWindow onboarding:code), turn code search on
-///     -codeLocations a:b      the folders offered for code search (dev runs offer none without it)
 enum DebugHooks {
     /// A debug run that decides what to show (the window a launch by hand opens would get in its way).
     static var drivesUI: Bool {
@@ -97,14 +93,6 @@ enum DebugHooks {
             DispatchQueue.main.asyncAfter(deadline: .now() + defaults.double(forKey: "debugFoldersAfter")) {
                 log("debug: folders → \(folders)")
                 app.applyFolders(folders.split(separator: ":").map { AppSettings.folderURL(String($0)) })
-            }
-        }
-        if let folders = defaults.string(forKey: "debugCodeFolders") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + defaults.double(forKey: "debugCodeFoldersAfter")) {
-                log("debug: code folders → \(folders)")
-                app.applyCodeFolders(folders == "off" ? [] : folders.split(separator: ":").map {
-                    AppSettings.folderURL(String($0))
-                }, excluded: [])
             }
         }
         if defaults.bool(forKey: "debugUpdateCheck") {
@@ -293,14 +281,6 @@ enum DebugHooks {
             let close: () -> Void
             var choices: () -> FolderChoices? = { nil }
             switch parts[0] {
-            case "settings" where parts.count > 1 && parts[1] == "addcode":
-                app.showSettings(.code)
-                app.settingsWindow.addCodeFolders()
-                let sheet = app.settingsWindow.codeSheet
-                choices = { sheet.choices }
-                loaded = { app.settingsWindow.state.isLoaded && sheet.choices?.estimatesDone ?? false }
-                draw = { try sheet.snapshot(to: $0) }
-                close = { sheet.end() }
             case "settings" where parts.count > 1 && parts[1] == "add":
                 app.showSettings(.folders)
                 app.settingsWindow.addFolders()
@@ -321,13 +301,9 @@ enum DebugHooks {
                 if parts.count > 1, let step = OnboardingState.Step.allCases.first(where: { "\($0)" == parts[1] }) {
                     onboarding.state.go(to: step)
                 }
-                if onboarding.state.step == .code, defaults.bool(forKey: "debugSearchCode") {
-                    onboarding.state.searchCode = true
-                }
                 choices = {
                     switch onboarding.state.step {
                     case .folders: onboarding.state.folders
-                    case .code: onboarding.state.searchCode ? onboarding.state.codeFolders : nil
                     default: nil
                     }
                 }
@@ -358,12 +334,6 @@ enum DebugHooks {
                             let settings = app.model.settings
                             log("debug: added; folders \(settings.roots.map { tildePath($0.path) }) · skipping "
                                 + "\(settings.excludedFolders.map { tildePath($0.path) })")
-                        }
-                        if defaults.bool(forKey: "debugAdd"), app.settingsWindow.codeSheet.isOpen {
-                            app.settingsWindow.codeSheet.add()
-                            let settings = app.model.settings
-                            log("debug: added; code folders \(settings.codeRoots.map { tildePath($0.path) }) · "
-                                + "skipping \(settings.codeExcluded.map { tildePath($0.path) })")
                         }
                         press(keys, app, describe: { windowState(app) }) {
                             if defaults.bool(forKey: "debugCloseWindow") {
@@ -424,13 +394,12 @@ enum DebugHooks {
     private static var onboardingStepCount = 4
 
     /// Snapshots step `index` (of the steps this Mac gets), then presses its Continue (Get Started, Continue…, Done).
-    /// On the folder step, `-debugChoices` acts on the list first; on the code step, `-debugSearchCode` turns it on.
+    /// On the folder step, `-debugChoices` acts on the list first.
     private static func onboardingStep(_ index: Int, _ onboarding: OnboardingController, _ app: AppController) {
         let state = onboarding.state
         onboardingStepCount = state.steps.count
         guard index < state.steps.count else { return waitForFirstIndex(app) }
         let name = "\(index + 1)-\(state.step)"
-        if state.step == .code, UserDefaults.standard.bool(forKey: "debugSearchCode") { state.searchCode = true }
         waitUntil({ state.isLoaded }, deadline: Date().addingTimeInterval(60)) {
             if state.step == .folders { act(on: state.folders) }
             waitUntil({ state.isLoaded }, deadline: Date().addingTimeInterval(60)) {

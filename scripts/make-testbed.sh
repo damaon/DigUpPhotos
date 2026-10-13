@@ -3,7 +3,6 @@
 #   real/       APFS clones of a seeded random sample of your own files (no extra disk space)
 #   synthetic/  generated media with known content: the ground truth for evals
 #   traps/      cases the crawler must get right (TypeScript .ts, code projects, datasets, icons, bundles, odd names)
-#   code/       small git repos with known functions, for code search (evals/code.json)
 #
 #   scripts/make-testbed.sh [dir]        default: ~/DigUpTestbed
 # Delete it any time: rm -rf ~/DigUpTestbed
@@ -62,9 +61,6 @@ mkdir -p "$T/duplicates"
 cp -c "$S/img/Animals-Penguin.jpg" "$T/duplicates/penguin.jpg"
 cp -c "$S/img/Animals-Penguin.jpg" "$T/duplicates/penguin copy.jpg"
 
-echo "== code/ =="
-python3 -I "$REPO/scripts/testbed/make_code.py" "$TB/code"
-
 cat > "$TB/README.md" <<'EOF'
 # DigUp testbed
 
@@ -81,9 +77,6 @@ Rebuild it with `scripts/make-testbed.sh` in the emgemma_app repo.
 - `traps/`: cases the crawler must handle: TypeScript `.ts` files (not videos), a real MPEG-TS video (is a video),
   a code project (only its screenshot counts), `node_modules`, hidden folders, an app bundle, tiny icons, a
   600-clip dataset, odd file names, and duplicates.
-- `code/`: four small git repos (Python, Swift, TypeScript, notebooks) and loose scripts with known functions, for
-  code search (`evals/code.json`); each repo also holds what code search must leave out (vendored and built copies,
-  generated and minified code, a private key, data).
 EOF
 echo "== done: $TB =="
 du -sh "$TB" 2>/dev/null | sed 's/^/apparent size (clones share blocks with originals): /'

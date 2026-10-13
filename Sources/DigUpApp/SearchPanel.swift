@@ -9,8 +9,6 @@ enum SearchPhase: Equatable {
     case words       // keyword results, meaning results on the way
     case meaning     // words + meaning: final
     case wordsOnly   // final, but there's no meaning search (the model is downloading, or the encoder failed)
-    case codeHint    // "code:" and nothing yet: what to type
-    case codeOff     // "code:" without code folders: how to turn code search on
 }
 
 /// The hotkey panel: type, see results grouped by kind with the selected one previewed big on the right, and open /
@@ -37,8 +35,6 @@ final class SearchPanelController {
     private(set) var showWeaker = false
     private(set) var selection: String?
     private(set) var phase = SearchPhase.empty
-    /// The query is a search of code ("code: …"): the code index, and nothing else.
-    private(set) var isCode = false
     private(set) var note: String?
     var encoder: EngineStatus.Encoder { model.status.encoder }
 
@@ -138,65 +134,52 @@ final class SearchPanelController {
         typedAt = Date()
         navigated = false
         meaningTask?.cancel()
-        let typed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let codeText = CodeQuery.text(of: typed)
-        isCode = codeText != nil
-        let code = isCode
-        let text = codeText ?? typed
-        guard !typed.isEmpty else {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
             results = .empty
             selection = nil
             phase = .empty
             resizeWindow()
             return
         }
-        // "code:" alone, or without code folders: what to do instead of results.
-        if code, !model.hasCode || text.isEmpty {
-            results = .empty
-            selection = nil
-            phase = model.hasCode ? .codeHint : .codeOff
-            resizeWindow()
-            return
-        }
         // Words now. The last word is probably half-typed, so it matches as a prefix.
         Task {
             let started = Date()
-            let hits = await engine.search(text, vector: nil, prefixLast: true, code: code)
+            let hits = await engine.search(text, vector: nil, prefixLast: true)
             guard current == generation, finalGeneration != current else { return }
             show(hits, query: text, phase: .words)
-            log("search \"\(typed)\": words \(hits.count) hits in \(ms(since: started))")
+            log("search \"\(text)\": words \(hits.count) hits in \(ms(since: started))")
         }
         // Meaning results show once typing pauses, but they're computed now (embedding, then search), so they're
         // ready by then: the pause is the whole wait.
-        engine.embedAhead(text, code: code)
+        engine.embedAhead(text)
         let showAt = ContinuousClock.now + Self.typingPause   // counted from the keystroke, not from when the task runs
         meaningTask = Task {
             let embedStarted = Date()
-            let vector = await engine.embedQuery(text, code: code)
+            let vector = await engine.embedQuery(text)
             guard !Task.isCancelled, current == generation else { return }
             let searchStarted = Date()
-            let hits = await engine.search(text, vector: vector, prefixLast: false, code: code)
+            let hits = await engine.search(text, vector: vector, prefixLast: false)
             let searched = Date()
             try? await Task.sleep(until: showAt, tolerance: .milliseconds(1), clock: .continuous)
             guard !Task.isCancelled, current == generation else { return }
             finalGeneration = current
             show(hits, query: text, phase: vector == nil ? .wordsOnly : .meaning)
             let shown = Date(), keystroke = typedAt
-            log("search \"\(typed)\": \(vector == nil ? "words only" : "meaning") \(hits.count) hits "
+            log("search \"\(text)\": \(vector == nil ? "words only" : "meaning") \(hits.count) hits "
                 + "(\(results.strongRows.count) strong) · embed \(ms(since: embedStarted, until: searchStarted)) · "
                 + "search \(ms(since: searchStarted, until: searched)) · shown \(ms(since: keystroke, until: shown)) after "
                 + "the last keystroke")
             DispatchQueue.main.async {
                 // The next turn of the main loop: the list and the preview pane have been laid out and drawn.
-                log("search \"\(typed)\": drawn by \(ms(since: keystroke)) after the last keystroke")
+                log("search \"\(text)\": drawn by \(ms(since: keystroke)) after the last keystroke")
             }
             onFinalResults?()
         }
     }
 
     private func show(_ hits: [SearchHit], query: String, phase: SearchPhase) {
-        // Code is one group: it gets the room of all of them.
-        results = ResultSet(hits, query: query, rowsPerGroup: isCode ? Self.rowsPerGroup * 3 : Self.rowsPerGroup)
+        results = ResultSet(hits, query: query, rowsPerGroup: Self.rowsPerGroup)
         if !navigated { showWeaker = false }
         // Follow the top hit until you pick something with the arrow keys.
         if !navigated || !rowIDs.contains(where: { $0 == selection }) {
@@ -362,17 +345,6 @@ final class SearchPanelController {
     func chooseFolders() {
         hide()
         app.chooseFolders()
-    }
-
-    /// "code:" without code search: hide, and open where code folders are chosen.
-    func setUpCodeSearch() {
-        hide()
-        app.chooseCodeFolders()
-    }
-
-    /// An example from the code hint, as if typed.
-    func tryExample(_ text: String) {
-        query = text
     }
 
     /// Esc: hide, and give the keyboard back to the app you came from.

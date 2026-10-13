@@ -4,14 +4,13 @@ import Observation
 import SwiftUI
 
 enum SettingsTab: String, CaseIterable {
-    case general, folders, people, code, storage
+    case general, folders, people, storage
 
     var title: String {
         switch self {
         case .general: "General"
         case .folders: "Folders"
         case .people: "People"
-        case .code: "Code"
         case .storage: "Storage"
         }
     }
@@ -21,7 +20,6 @@ enum SettingsTab: String, CaseIterable {
         case .general: "gearshape"
         case .folders: "folder"
         case .people: "person.2"
-        case .code: "chevron.left.forwardslash.chevron.right"
         case .storage: "internaldrive"
         }
     }
@@ -33,8 +31,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     let state: SettingsState
     /// Folders → Add Folders…, a sheet on this window.
     let addSheet: AddFoldersController
-    /// Code → Add Folders… (code search's folders), a sheet on this window.
-    let codeSheet: AddFoldersController
     private unowned let app: AppController
     private var window: NSWindow?
     private var tabs: NSTabViewController?
@@ -43,26 +39,17 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         self.app = app
         state = SettingsState(app: app)
         addSheet = AddFoldersController(app: app)
-        codeSheet = AddFoldersController(app: app, code: true)
         super.init()
         state.addFolders = { [weak self] in self?.addFolders() }
-        state.addCodeFolders = { [weak self] in self?.addCodeFolders() }
-        for sheet in [addSheet, codeSheet] {
-            sheet.onAdded = { [weak self] in
-                guard let self else { return }
-                Task { await self.state.refresh() }
-            }
+        addSheet.onAdded = { [weak self] in
+            guard let self else { return }
+            Task { await self.state.refresh() }
         }
     }
 
     /// Opens Add Folders on the Folders tab.
     func addFolders() {
         addSheet.begin(on: window)
-    }
-
-    /// Opens the code folders' sheet on the Code tab.
-    func addCodeFolders() {
-        codeSheet.begin(on: window)
     }
 
     var isVisible: Bool { window?.isVisible == true }
@@ -107,7 +94,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         addSheet.end()
-        codeSheet.end()
         window?.contentViewController = nil
         window = nil
         tabs = nil
@@ -123,17 +109,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 final class SettingsState {
     var tab = SettingsTab.general
     private(set) var summaries: [Engine.RootSummary]?
-    private(set) var codeSummaries: [Engine.RootSummary] = []
     private(set) var people: [Person] = []
     private(set) var indexSize: Int64 = 0
-    private(set) var codeIndexSize: Int64 = 0
     var launchAtLogin = false
     var loginProblem: String?
     var checksForUpdates = false
     @ObservationIgnored let app: AppController
     @ObservationIgnored var selectTab: (SettingsTab) -> Void = { _ in }
     @ObservationIgnored var addFolders: () -> Void = {}
-    @ObservationIgnored var addCodeFolders: () -> Void = {}
 
     init(app: AppController) {
         self.app = app
@@ -149,8 +132,6 @@ final class SettingsState {
         launchAtLogin = app.launchesAtLogin
         checksForUpdates = app.updates.automaticallyChecks
         indexSize = app.engine.indexSize
-        codeIndexSize = app.engine.codeIndexSize
-        codeSummaries = await app.engine.rootSummaries(code: true)
         people = await app.engine.people()
         summaries = await app.engine.rootSummaries()
     }
@@ -192,7 +173,6 @@ private struct SettingsPane: View {
             case .general: GeneralSettings(state: state)
             case .folders: FolderSettings(state: state)
             case .people: PeopleSettings(state: state)
-            case .code: CodeSettings(state: state)
             case .storage: StorageSettings(state: state)
             }
         }
@@ -635,9 +615,6 @@ private struct StorageSettings: View {
             }
             Section("Index") {
                 LabeledContent("Size on disk", value: bytes(state.indexSize))
-                if state.model.hasCode {
-                    LabeledContent("Code index", value: bytes(state.codeIndexSize))
-                }
                 LabeledContent("Location") {
                     PathButton(url: state.model.settings.indexDirectory)
                 }
@@ -658,107 +635,6 @@ private struct StorageSettings: View {
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
-    }
-}
-
-/// Code search: its folders and how far along their index is, the editor results open in, and turning it off.
-private struct CodeSettings: View {
-    @Bindable var state: SettingsState
-    @State private var turningOff = false
-    @State private var removing: Engine.RootSummary?
-
-    var body: some View {
-        Form {
-            Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Search your code").font(.system(size: 13, weight: .semibold))
-                    Text("Find code by what it does, or by a name in it: type code: in the search panel, as in "
-                         + "“code: retry with backoff”. Code has an index of its own, and it never shows up in "
-                         + "other searches.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if state.model.hasCode {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(state.model.codeStatusLine).font(.system(size: 12, weight: .medium))
-                            if let indexing = state.model.status.code.indexing, indexing.total > 0 {
-                                ProgressView(value: Double(indexing.done) / Double(indexing.total)).controlSize(.small)
-                            }
-                        }
-                        Spacer()
-                        Text(bytes(state.codeIndexSize))
-                            .font(.system(size: 11).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            Section {
-                if state.codeSummaries.isEmpty {
-                    Text("No code folders yet. Add the folders that hold your projects.")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(state.codeSummaries) { summary in
-                    FolderStatusRow(summary: summary) { removing = summary }
-                }
-            } header: {
-                Text("Code folders")
-            } footer: {
-                HStack {
-                    Button(action: state.addCodeFolders) {
-                        Label(state.model.hasCode ? "Add Folders…" : "Choose Code Folders…", systemImage: "plus")
-                    }
-                    Spacer()
-                }
-            }
-            Section {
-                Picker("Open code in", selection: Binding(get: { CodeEditor.current.id },
-                                                          set: { state.app.setCodeEditor($0) })) {
-                    ForEach(CodeEditor.installed) { editor in Text(editor.name).tag(editor.id) }
-                    Text(CodeEditor.defaultApp.name).tag(CodeEditor.defaultApp.id)
-                }
-            } footer: {
-                Text("A result opens there at the line that matched. Space shows the whole file in Quick Look.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            Section {
-                Text("The code index keeps your code's text on this Mac, as the main index keeps your documents'. "
-                     + "It skips what git ignores, vendored and generated code, data files, and anything that looks "
-                     + "like a key or a password.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if state.model.hasCode {
-                    HStack {
-                        Spacer()
-                        Button("Turn Off Code Search…", role: .destructive) { turningOff = true }
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .scrollDisabled(true)
-        .onChange(of: state.model.status) { state.statusChanged() }
-        .confirmationDialog("Turn off code search?", isPresented: $turningOff) {
-            Button("Turn Off", role: .destructive) {
-                state.app.applyCodeFolders([], excluded: [])
-                Task { await state.refresh() }
-            }
-        } message: {
-            Text("The code index (\(bytes(state.codeIndexSize))) is deleted. Turning it on again reads the code again.")
-        }
-        .confirmationDialog("Stop searching the code in “\(removing.map { ($0.path as NSString).lastPathComponent } ?? "")”?",
-                            isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
-            Button("Remove", role: .destructive) {
-                guard let removing else { return }
-                state.app.removeCodeFolder(URL(fileURLWithPath: removing.path))
-                Task { await state.refresh() }
-            }
-        } message: {
-            Text("Its \(removing?.files.formatted() ?? "") code files leave the code index.")
-        }
     }
 }
 

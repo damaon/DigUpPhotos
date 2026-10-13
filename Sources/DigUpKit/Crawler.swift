@@ -20,9 +20,6 @@ public struct CrawlReport: Sendable {
 
 /// Walks the chosen folders and applies `Rules`. Reads metadata only, never file contents (except the 600-byte
 /// sniff that tells a real MPEG-TS video from a TypeScript file).
-///
-/// For the code index (`IndexOptions.code`) it walks the code folders instead: code files only (`Rules.classifyCode`),
-/// in a git repo only those git keeps (`GitFiles`), and none in vendored or built folders.
 public enum Crawler {
     public static func crawl(_ roots: [URL], options: IndexOptions) -> CrawlReport {
         let fm = FileManager.default
@@ -31,15 +28,12 @@ public enum Crawler {
                                       .ubiquitousItemDownloadingStatusKey]
         var report = CrawlReport()
         var projectRoots = Set<String>()
-        var repos = GitRepos()
         var found: [Candidate] = []
         var foundPaths = Set<String>()   // a folder inside another root would be walked twice
         let rootPaths = Set(roots.map { $0.standardizedFileURL.path })
 
         for root in roots.map({ $0.standardizedFileURL }) {
-            if options.code {
-                repos.enterRoot(root.path)
-            } else if Rules.isProjectRoot(root.path) {
+            if Rules.isProjectRoot(root.path) {
                 projectRoots.insert(root.path)
             }
             // A skip applies inside the chosen folders that contain it: a folder chosen inside a skipped one is
@@ -54,12 +48,9 @@ public enum Crawler {
             func visit(_ url: URL) {
                 let values = try? url.resourceValues(forKeys: Set(keys))
                 if values?.isDirectory == true, values?.isPackage != true {
-                    if let reason = Rules.skipReason(forFolder: url, home: home, excluded: skips)
-                        ?? (options.code ? Rules.codeSkipReason(forFolder: url) : nil) {
+                    if let reason = Rules.skipReason(forFolder: url, home: home, excluded: skips) {
                         walker.skipDescendants()
                         report.skippedFolders[reason, default: 0] += 1
-                    } else if options.code {
-                        repos.enter(url.path)
                     } else if Rules.isProjectRoot(url.path) {
                         projectRoots.insert(url.path)
                     }
@@ -69,8 +60,7 @@ public enum Crawler {
                     report.skipped["app or bundle", default: 0] += 1
                     return
                 }
-                let classification = options.code ? Rules.classifyCode(url, options: options)
-                    : Rules.classify(url, type: values?.contentType, options: options)
+                let classification = Rules.classify(url, type: values?.contentType, options: options)
                 switch classification {
                 case .ignore:
                     report.skipped["other type", default: 0] += 1
@@ -88,19 +78,6 @@ public enum Crawler {
                     if dataless || inCloud {
                         report.skipped["in the cloud, not downloaded", default: 0] += 1
                         return
-                    }
-                    if options.code {
-                        // Too big to be written by hand; a notebook's file holds its outputs too.
-                        let limit = url.pathExtension.lowercased() == "ipynb" ? options.maxNotebookBytes
-                            : options.maxCodeBytes
-                        if info.st_size > limit {
-                            report.skipped["too big to be written by hand", default: 0] += 1
-                            return
-                        }
-                        if repos.ignores(url.path) {
-                            report.skipped["ignored by git", default: 0] += 1
-                            return
-                        }
                     }
                     guard foundPaths.insert(url.path).inserted else { return }
                     let mtime = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
@@ -129,14 +106,14 @@ public enum Crawler {
         }
         var kept: [Candidate] = []
         for file in found {
-            if !options.code, file.kind != .screenshot, isInProject((file.path as NSString).deletingLastPathComponent) {
+            if file.kind != .screenshot, isInProject((file.path as NSString).deletingLastPathComponent) {
                 report.skipped["inside a code project", default: 0] += 1
             } else {
                 kept.append(file)
             }
         }
 
-        if !options.includeDatasets, !options.code {
+        if !options.includeDatasets {
             let datasets = Rules.datasetFolders(kept.map {
                 (($0.path as NSString).deletingLastPathComponent,
                  (($0.path as NSString).lastPathComponent as NSString).deletingPathExtension, $0.kind)
@@ -153,96 +130,5 @@ public enum Crawler {
         }
         report.candidates = kept
         return report
-    }
-}
-
-/// The git repos a code crawl walks through, and the files each keeps (`GitFiles`): a file git ignores (a build, an
-/// environment, data, a secret listed in .gitignore) isn't code search's to read. A folder that isn't in a repo, or a
-/// Mac without git, has no list: everything there counts.
-struct GitRepos {
-    /// Repo folder → the files git keeps in it (paths relative to it), or nil when git couldn't say.
-    private var files: [String: Set<String>?] = [:]
-    /// Folder → the repo it's in (nil: none), as the walk found them.
-    private var repoOf: [String: String?] = [:]
-
-    /// A chosen folder: a repo itself, or inside one (a repo's subfolder chosen on its own).
-    mutating func enterRoot(_ path: String) {
-        var folder = path
-        while true {
-            if FileManager.default.fileExists(atPath: folder + "/.git") {
-                files[folder] = GitFiles.list(folder)
-                repoOf[path] = folder
-                return
-            }
-            let parent = (folder as NSString).deletingLastPathComponent
-            guard parent != folder, parent.count > 1 else { break }
-            folder = parent
-        }
-        repoOf[path] = .some(nil)
-    }
-
-    /// A folder the walk goes into: a repo of its own when it has a .git folder (a submodule's or a worktree's .git
-    /// file keeps it out of the walk: `Rules.codeSkipReason`).
-    mutating func enter(_ path: String) {
-        var isFolder: ObjCBool = false
-        if FileManager.default.fileExists(atPath: path + "/.git", isDirectory: &isFolder), isFolder.boolValue {
-            files[path] = GitFiles.list(path)
-            repoOf[path] = path
-        }
-    }
-
-    /// The repo `folder` is in, from the closest folder the walk has seen.
-    private mutating func repo(of folder: String) -> String? {
-        if let known = repoOf[folder] { return known }
-        let parent = (folder as NSString).deletingLastPathComponent
-        let answer = parent != folder && parent.count > 1 ? repo(of: parent) : nil
-        repoOf[folder] = answer
-        return answer
-    }
-
-    /// Whether git ignores the file at `path` (in a repo whose files git listed).
-    mutating func ignores(_ path: String) -> Bool {
-        guard let repo = repo(of: (path as NSString).deletingLastPathComponent), let kept = files[repo] ?? nil
-        else { return false }
-        return !kept.contains(String(path.dropFirst(repo.count + 1)))
-    }
-}
-
-/// The files git keeps in a repo: tracked ones, and new ones its .gitignore doesn't leave out.
-enum GitFiles {
-    /// A git that's really installed (Xcode's, the command line tools', Homebrew's). /usr/bin/git on a Mac without the
-    /// developer tools only asks to install them.
-    static let git: String? = {
-        var candidates: [String] = []
-        if let developer = try? FileManager.default.destinationOfSymbolicLink(atPath: "/var/db/xcode_select_link") {
-            candidates.append(developer + "/usr/bin/git")
-        }
-        candidates += ["/Library/Developer/CommandLineTools/usr/bin/git",
-                       "/Applications/Xcode.app/Contents/Developer/usr/bin/git", "/opt/homebrew/bin/git",
-                       "/usr/local/bin/git"]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-    }()
-
-    /// Paths relative to `repo`, or nil when git can't say (no git, not a repo, an error).
-    static func list(_ repo: String) -> Set<String>? {
-        guard let git else { return nil }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: git)
-        process.arguments = ["-C", repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
-        // Reading only: never wait for, or take, the repo's lock (an editor's git may be busy in it).
-        process.environment = ["GIT_OPTIONAL_LOCKS": "0", "PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory()]
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        process.standardInput = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        return Set(data.split(separator: 0).compactMap { String(data: Data($0), encoding: .utf8) })
     }
 }

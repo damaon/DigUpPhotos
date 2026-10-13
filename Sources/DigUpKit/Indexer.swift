@@ -316,7 +316,6 @@ public final class Indexer {
         case doc(chunks: [String], read: Range<Int>, total: Int, characters: Int)
         case audio(pieces: [MediaPiece], duration: Double)
         case video(frames: [MediaPiece], sound: [MediaPiece], duration: Double, capture: CaptureInfo)
-        case code(CodeExtractor.File)
     }
 
     struct ReadyImage: Sendable {
@@ -416,8 +415,6 @@ public final class Indexer {
                         .pieces
                     : []
                 prepared.payload = .video(frames: frames, sound: sound, duration: duration, capture: capture)
-            case .code:
-                prepared.payload = .code(try CodeExtractor.read(url, options: options))
             }
         } catch let error as ExtractError {
             if case .leftOut = error {
@@ -465,8 +462,6 @@ public final class Indexer {
                 results[0] = try audio(batch[0], pieces: pieces, duration: duration)
             case .video(let frames, let sound, let duration, let capture):
                 results[0] = try video(batch[0], frames: frames, sound: sound, duration: duration, capture: capture)
-            case .code(let code):
-                results[0] = try self.code(batch[0], code)
             }
         } catch let error as WorkerError {
             throw error
@@ -638,34 +633,6 @@ public final class Indexer {
             : unread ? "\(chunks.count) of \(end) chunks" : "\(chunks.count) chunks"
         return (unread ? "partial" : "done",
                 span + (worded.count < chunks.count ? ", \(chunks.count - worded.count) for keywords only" : ""))
-    }
-
-    /// A code file's stretches of lines (a notebook's of cells), each embedded with the file's path in its repo as its
-    /// title, and kept with its lines for keyword search and for opening at the place.
-    private func code(_ file: FileRecord, _ code: CodeExtractor.File) throws -> (String, String?) {
-        guard !code.pieces.isEmpty else {
-            try store.finish(file.id, state: "skipped", detail: "no code")
-            return ("skipped", "no code")
-        }
-        // Lines that are mostly numbers and symbols (a table of constants) get keyword search only.
-        let worded = code.pieces.indices.filter { SearchText.hasWords(code.pieces[$0].text) }
-        let vectors = worded.isEmpty ? [] : try fullWorker().embedTexts(worded.map {
-            Prompts.document(title: code.title, text: code.pieces[$0].text)
-        })
-        let vector = Dictionary(uniqueKeysWithValues: zip(worded, vectors))
-        try store.db.transaction {
-            for (offset, piece) in code.pieces.enumerated() {
-                try store.addSegment(file: file.id, kind: code.cells == nil ? .lines : .cells, modality: .text,
-                                     loc: Double(piece.first), locEnd: Double(piece.last),
-                                     excerpt: CodeExtractor.summary(piece.text), text: piece.text, vector: vector[offset])
-            }
-            var info = ["lines": "\(code.lines)"]
-            info["cells"] = code.cells.map(String.init)
-            info["repo"] = code.repo
-            try store.finish(file.id, state: "done", info: info)
-        }
-        return ("done", "\(code.pieces.count) stretches, \(code.cells.map { "\($0) cells" } ?? "\(code.lines) lines")"
-                + (worded.count < code.pieces.count ? ", \(code.pieces.count - worded.count) for keywords only" : ""))
     }
 
     private func audio(_ file: FileRecord, pieces: [MediaPiece], duration: Double) throws -> (String, String?) {

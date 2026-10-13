@@ -12,18 +12,7 @@ public struct Costs: Sendable {
     public var docChunk = 0.095
     public var audioSecond = 0.0089      // a 30 s window every 25 s
     public var videoSecond = 0.019       // a 70-token keyframe per shot (at most one per 3 s) + the soundtrack
-    /// A stretch of code (2026-10-09: 258 Swift and Objective-C files, 1,245 stretches in 45 s with the model's start).
-    public var codeStretch = 0.037
     public init() {}
-}
-
-/// How big the code index gets: its words (keyword search keeps the text, ~2.4 bytes of index a character of code)
-/// and a vector row for each stretch (measured 2026-10-09: 6.3 MB for 258 files, 2 MB of code, 1,245 stretches).
-public enum CodeIndexSize {
-    static let perCharacter = 2.4
-    static let perStretch = 1600.0
-    /// Characters a stretch holds on average, its lines cut where the code breaks (`CodeExtractor.lines`).
-    static let charactersPerStretch: Int64 = 1400
 }
 
 public struct Estimate: Sendable {
@@ -38,9 +27,6 @@ public struct Estimate: Sendable {
     /// once everything else is in (`Indexer.finishLongFiles`).
     public var longFiles = 0
     public var laterSeconds = 0.0
-    /// The code index (`IndexOptions.code`): its stretches of code, and about how big it gets on disk.
-    public var codeStretches = 0
-    public var bytes = 0.0
 
     public init() {}
 
@@ -55,8 +41,6 @@ public struct Estimate: Sendable {
         sum.seconds += b.seconds
         sum.longFiles += b.longFiles
         sum.laterSeconds += b.laterSeconds
-        sum.codeStretches += b.codeStretches
-        sum.bytes += b.bytes
         return sum
     }
 }
@@ -99,15 +83,6 @@ public enum Estimator {
                 let seconds = duration(of: file.path)
                 estimate.videoSeconds += seconds
                 estimate.seconds += seconds * costs.videoSecond
-            case .code:
-                // A notebook's file is mostly its outputs, which aren't read: a guess at its cells' share.
-                let characters = file.path.lowercased().hasSuffix(".ipynb") ? file.size / 8 : file.size
-                let stretches = Int(max(1, (characters + CodeIndexSize.charactersPerStretch - 1)
-                    / CodeIndexSize.charactersPerStretch))
-                estimate.codeStretches += stretches
-                estimate.seconds += Double(stretches) * costs.codeStretch
-                estimate.bytes += Double(characters) * CodeIndexSize.perCharacter
-                    + Double(stretches) * CodeIndexSize.perStretch
             }
         }
         return estimate

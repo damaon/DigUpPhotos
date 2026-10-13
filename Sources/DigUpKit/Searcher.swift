@@ -19,9 +19,6 @@ public struct SearchHit: Sendable {
     public let modified: Double
     public let size: Int64
     public let info: [String: String]
-    /// Code: the line to open at, in the stretch (`loc`…`locEnd`): where the name looked up is defined, or the first
-    /// line with the query's words. Nil: the stretch's first line.
-    public var focus: Double? = nil
 }
 
 /// Hybrid search: meaning (EmbeddingGemma's vectors) + words (FTS5).
@@ -44,9 +41,6 @@ public final class Searcher {
     public private(set) var vectorsLoaded = false
 
     public var vectorCount: Int { rowFile.count }
-
-    /// This is the code index's searcher (`IndexStore.codeFile`): names are looked up as names (`CodeLookup`).
-    public var isCode: Bool { store.file.lastPathComponent == IndexStore.codeFile }
 
     /// With `loadVectors: false` only keyword search is ready; vectors load on the first meaning search. The app
     /// uses that to stay small while idle: 20k vectors are ~30 MB.
@@ -106,19 +100,15 @@ public final class Searcher {
         vectorSource = try store.meta("vector_source")
     }
 
-    /// How much finding the query's words counts against meaning (`search`). Code's words count for less: they're
-    /// everywhere in code ("app", "running", "location"), and a stretch that shares a few of them beat the one that
-    /// does what the query says (2026-10-09, the real-code eval of 27 queries over DigUp, Sparkle and llama.cpp: 18 → 20
-    /// found first, the top 5 unchanged; the synthetic code eval 40 → 41 of 41; 1.5 changed nothing, 0.5 lost the top 5).
+    /// How much finding the query's words counts against meaning (`search`).
     public static let wordWeight = 2.0
-    public static let codeWordWeight = 1.0
 
     /// Hybrid search. `people`: only photos that contain every listed person on the same image (AND). Nil or empty
     /// means no people filter.
     public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil,
                        people: Set<Int64>? = nil, limit: Int = 20, zGate: Double = 2.0, wordWeight: Double? = nil,
                        prefixLast: Bool = false) throws -> [SearchHit] {
-        let wordWeight = wordWeight ?? (isCode ? Self.codeWordWeight : Self.wordWeight)
+        let wordWeight = wordWeight ?? Self.wordWeight
         if queryVector != nil, !vectorsLoaded { try reload() }
         let fileKind = self.fileKind
         // AND: a photo must include Person A and Person B when both are selected.
@@ -140,13 +130,11 @@ public final class Searcher {
             }
         }
 
-        // Words: FTS5 with Porter stemming over file names, folder names, OCR, page and document text. A name from code
-        // ("quantize_row_q8_0_ref") is matched as one phrase, as it's written.
+        // Words: FTS5 with Porter stemming over file names, folder names, OCR, page and document text.
         let terms = Self.terms(text)
-        let identifier = isCode ? CodeLookup.identifier(text) : nil
         var words: [(file: Int64, segment: Int64, snippet: String?)] = []
         var coverage: [Int64: Double] = [:]   // share of the query's words found anywhere in the file
-        let patterns = identifier.map { [CodeLookup.phrase($0)] } ?? Self.patterns(terms, prefixLast: prefixLast)
+        let patterns = Self.patterns(terms, prefixLast: prefixLast)
         if !patterns.isEmpty {
             var seen = Set<Int64>()
             try store.db.query("""
@@ -176,7 +164,7 @@ public final class Searcher {
         // One common word can't beat a strong meaning match; all the words of an exact lookup usually do.
         // (This beat reciprocal-rank fusion on both evals, 2026-10-07: R@1 0.88 vs 0.73 synthetic, 0.86 vs 0.82 real.)
         // Photos also get a light boost from `info.quality` (0…100); queries that ask for nice/best photos lean on it more.
-        let lookup = Self.isLookup(terms) || identifier != nil
+        let lookup = Self.isLookup(terms)
         let (meaningWeight, wordsWeight) = lookup ? (0.5, wordWeight * 2) : (1, wordWeight)
         let hinted = Self.kindHints(text)
         let wantNice = Self.wantsNicePhotos(text)
@@ -199,21 +187,11 @@ public final class Searcher {
         var hits: [SearchHit] = []
         for (file, score) in scored.sorted(by: { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) })
             .prefix(limit) {
-            let rank = hits.count
             let semantic = best[file]
             let keyword = wordRank[file]
             // Point at the best meaning segment if it stands out; else at the segment the words matched.
             let useMeaning = semantic.map { $0.z >= zGate || keyword == nil } ?? false
-            guard var segmentID = useMeaning ? semantic.map({ rowSegment[$0.row] }) : keyword?.1.segment else { continue }
-            var focus: Double?
-            if isCode {
-                // Where a name is defined is looked for in the first 10 results only: a name used all over a big repo
-                // (ggml_tensor) is in hundreds of stretches of every file that has it (2026-10-09, llama.cpp and two
-                // more repos: 560 → 100 ms a search; the others take 10–50 ms).
-                (segmentID, focus) = try codePlace(file: file, segment: segmentID,
-                                                   identifier: rank < 10 ? identifier : nil, query: text, terms: terms,
-                                                   wordsHere: keyword?.1.segment == segmentID || identifier != nil)
-            }
+            guard let segmentID = useMeaning ? semantic.map({ rowSegment[$0.row] }) : keyword?.1.segment else { continue }
             var path = "", kind = FileKind.doc, modified = 0.0, size: Int64 = 0, info: [String: String] = [:]
             try store.db.query("SELECT path, kind, mtime, size, info FROM files WHERE id = ?", [.int(file)]) {
                 path = $0.text(0) ?? ""
@@ -247,35 +225,9 @@ public final class Searcher {
             hits.append(SearchHit(path: path, kind: kind, score: score, z: semantic?.z, cosine: semantic?.cosine,
                                   keywordRank: keyword?.0, segment: segment, segmentID: segmentID, loc: loc,
                                   locEnd: locEnd,
-                                  excerpt: snippet ?? storedExcerpt, modified: modified, size: size, info: info,
-                                  focus: focus))
+                                  excerpt: snippet ?? storedExcerpt, modified: modified, size: size, info: info))
         }
         return hits
-    }
-
-    /// Code: the stretch to point at, and the line in it to open at. A name looked up points at the stretch that
-    /// defines it, when one does (not the ones that call it). Otherwise the line is the first with the query's words,
-    /// when they matched in this stretch; a match by meaning alone opens at the stretch's first line.
-    private func codePlace(file: Int64, segment: Int64, identifier: [String]?, query: String, terms: [String],
-                           wordsHere: Bool) throws -> (Int64, Double?) {
-        let name = query.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "()", with: "")
-        if let identifier {
-            var best: (segment: Int64, line: Int, strength: Int)?
-            try store.db.query("""
-                SELECT s.id, s.loc, coalesce(fts.original, fts.body) FROM fts JOIN segments s ON s.id = fts.rowid
-                WHERE fts MATCH ? AND s.file = ? ORDER BY s.loc LIMIT 300
-                """, [.text(CodeLookup.phrase(identifier)), .int(file)]) { row in
-                guard best?.strength ?? 0 < 2, let text = row.text(2),
-                      let found = CodeLookup.definition(of: name, in: text, first: Int(row.double(1))) else { return }
-                if found.strength > (best?.strength ?? 0) { best = (row.int(0), found.line, found.strength) }
-            }
-            if let best { return (best.segment, Double(best.line)) }
-        }
-        guard wordsHere || identifier != nil, let text = try text(ofSegment: segment) else { return (segment, nil) }
-        var first = 1
-        try store.db.query("SELECT loc FROM segments WHERE id = ?", [.int(segment)]) { first = Int($0.double(0)) }
-        let words = identifier == nil ? terms : [name.lowercased()]
-        return (segment, CodeLookup.firstLine(with: words, in: text, first: first).map(Double.init))
     }
 
     /// Codes and IDs ("K7Q2LM", "TRX50") and long numbers ("4815162342": an order, a phone number) mean nothing to an

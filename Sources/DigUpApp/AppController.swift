@@ -71,8 +71,7 @@ final class AppController {
             log("hotkey: can't read \"\(model.settings.hotkey)\" (try cmd+shift+space)")
         }
 
-        Previews.shared.passage = { [engine] id, code in await engine.text(ofSegment: id, code: code) }
-        CodeEditor.current = CodeEditor.chosen(model.settings.codeEditor)
+        Previews.shared.passage = { [engine] id in await engine.text(ofSegment: id) }
         download.onReady = { [weak self] in self?.engine.modelArrived() }
         engine.start()
         let settings = model.settings
@@ -148,35 +147,6 @@ final class AppController {
         engine.setFolders(roots: model.settings.roots, excluded: model.settings.excludedFolders, excludedTypes: types)
     }
 
-    // MARK: Code search
-
-    /// The code folders from now on (none turns code search off and deletes the code index), and those skipped in
-    /// them, by `FolderSelection`'s rule.
-    func applyCodeFolders(_ roots: [URL], excluded: [URL]) {
-        let selection = FolderSelection(chosen: roots.map { AppSettings.folderURL($0.path).path },
-                                        skipped: excluded.map(\.path))
-        let roots = selection.folders.map(AppSettings.folderURL)
-        let excluded = selection.effectiveSkips.map(AppSettings.folderURL)
-        guard roots != model.settings.codeRoots || excluded != model.settings.codeExcluded else { return }
-        AppSettings.save(codeRoots: roots, excluded: excluded)
-        model.settings.codeRoots = roots
-        model.settings.codeExcluded = excluded
-        engine.setCodeFolders(roots: roots, excluded: excluded)
-    }
-
-    func removeCodeFolder(_ root: URL) {
-        applyCodeFolders(model.settings.codeRoots.filter { $0.path != root.path },
-                         excluded: model.settings.codeExcluded.filter { !FolderSelection.isInside($0.path, root.path) })
-    }
-
-    /// The editor code results open in (a bundle id; "" for each file's default app).
-    func setCodeEditor(_ id: String) {
-        AppSettings.save(codeEditor: id)
-        model.settings.codeEditor = id
-        CodeEditor.current = CodeEditor.chosen(id)
-        log("code results open in \(CodeEditor.current.name)")
-    }
-
     func setIndexOnBattery(_ on: Bool) {
         AppSettings.save(indexOnBattery: on)
         model.settings.indexOnBattery = on
@@ -212,12 +182,6 @@ final class AppController {
         guard model.settings.onboarded else { return showOnboarding() }
         showSettings(.folders)
         settingsWindow.addFolders()
-    }
-
-    /// Settings → Code with its folders' sheet open.
-    func chooseCodeFolders() {
-        showSettings(.code)
-        settingsWindow.addCodeFolders()
     }
 
     // MARK: Hotkey

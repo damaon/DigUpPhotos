@@ -13,30 +13,26 @@ let usage = """
       digup index <folder>... [--limit N]     sync the index with these folders, embed what's new, then the rest
                                               of long PDFs and documents
       digup search <words>... [--kind K,K] [--person ID]... [-n 10] [--json]
-                                              "code: <words>" searches the code index; --person is AND (all on one photo)
+                                              --person is AND (all on one photo)
       digup people [--rename ID=Name]         list people from face clusters, or name one
       digup status                            what's in the index
-      digup eval <queries.json> [-n 10]       recall of known answers (see evals/; "code: …" queries search code)
-      digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
+      digup eval <queries.json> [-n 10]       recall of known answers (see evals/)
+      digup index-service <folder>... [--backfill] [--prune]
                                               the app's indexing helper (JSON lines; see IndexService)
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
 
     Options:
       --index DIR          index folder (default: ~/Library/Application Support/DigUp/index.noindex)
-      --code               estimate, index or show the code index of these folders (code.sqlite in the index
-                           folder): source files, their repos' docs and notebooks, minus what git ignores
       --kind K,K           screenshot, image, pdf, doc, audio, video
       --person ID          only photos that include this person (repeatable: AND — all must be on the same photo)
-      --include-code       also index loose source code and data files as documents (outside code projects)
       --include-datasets   don't skip folders that look like datasets
       --photos-video       index only photos and videos (screenshots, PDFs, documents and audio are skipped)
       --exclude DIR        don't index this folder (repeatable)
       --exclude-ext EXT    don't index files with this extension (repeatable, or comma-separated: "heic,txt")
       --reindex            drop vectors and embed everything again (after changing settings or model)
       --zgate Z            how far a meaning match must stand out (default 2.0)
-      --word-weight W      bonus for containing all of the query's words (default 2.0, and for code see Searcher)
+      --word-weight W      bonus for containing all of the query's words (default 2.0)
       --shot-tokens N      vision tokens per screenshot (default 280; 560 was 2× slower, no better on real shots)
-      --code-stretch N     characters a stretch of code holds at most (default 1800; 1200 and 3600 lost on the evals)
 
     The model: EmbeddingGemma 2 on llama.cpp, from $DIGUP_MODELS (only there, when set), else
     ~/Library/Application Support/DigUp/Models or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
@@ -54,8 +50,8 @@ struct Arguments {
     var lists: [String: [String]] = [:]
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
-                                      "--linger", "--shot-tokens", "--code-stretch", "--rename"]
-    static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--person"]
+                                      "--linger", "--shot-tokens", "--rename"]
+    static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--person"]
 
     init(_ raw: ArraySlice<String>) throws {
         var index = raw.startIndex
@@ -84,23 +80,17 @@ struct Arguments {
             as NSString).expandingTildeInPath).standardizedFileURL
     }
 
-    /// `--code`: the code index, not the main one.
-    var code: Bool { flags.contains("--code") }
-
     func store() throws -> IndexStore {
-        try IndexStore(directory: indexFolder, file: code ? IndexStore.codeFile : IndexStore.mainFile)
+        try IndexStore(directory: indexFolder)
     }
 
     var options: IndexOptions {
         var options = IndexOptions()
-        options.code = code
-        options.includeCode = flags.contains("--include-code")
         options.includeDatasets = flags.contains("--include-datasets")
         if flags.contains("--photos-video") { options.kinds = FileKind.photosAndVideo }
         options.excludedFolders = (lists["--exclude"] ?? []).map { Self.folderURL($0).path }
         options.excludedExtensions = IndexOptions.extensions((lists["--exclude-ext"] ?? []).joined(separator: ","))
         if let tokens = values["--shot-tokens"].flatMap(Int.init) { options.screenshotBudget = tokens }
-        if let characters = values["--code-stretch"].flatMap(Int.init) { options.codeStretch = characters }
         return options
     }
 
@@ -180,8 +170,6 @@ func location(_ hit: SearchHit) -> String {
     case .page, .pageImage: hit.loc.map { "p. \(Int($0))" } ?? ""
     case .audio, .frame: hit.loc.map { "at \(clock($0))" + (hit.segment == .audio ? " (sound)" : "") } ?? ""
     case .chunk: hit.loc.map { "part \(Int($0))" } ?? ""
-    case .lines: hit.loc.map { "lines \(Int($0))–\(Int(hit.locEnd ?? $0))" + (hit.focus.map { ", opens at \(Int($0))" } ?? "") } ?? ""
-    case .cells: hit.loc.map { $0 == hit.locEnd ? "cell \(Int($0))" : "cells \(Int($0))–\(Int(hit.locEnd ?? $0))" } ?? ""
     case .ocr: "text in image"
     default: ""
     }
@@ -241,11 +229,9 @@ func estimate(_ args: Arguments) throws {
                   "pdf_pages": estimate.pdfPages, "pdf_pages_total": estimate.pdfPagesTotal,
                   "audio_seconds": estimate.audioSeconds, "video_seconds": estimate.videoSeconds,
                   "long_files": estimate.longFiles, "later_seconds": estimate.laterSeconds,
-                  "code_stretches": estimate.codeStretches, "bytes": estimate.bytes,
                   "subfolders": subfolders.prefix(500).map {
                       ["folder": $0.key, "seconds": $0.value.seconds, "files": files($0.value),
-                       "long_files": $0.value.longFiles, "later_seconds": $0.value.laterSeconds,
-                       "bytes": $0.value.bytes] as [String: Any]
+                       "long_files": $0.value.longFiles, "later_seconds": $0.value.laterSeconds] as [String: Any]
                   },
                   "skipped": crawl.skipped.values.reduce(0, +), "datasets": crawl.datasets.count,
                   "ms": Int(Date().timeIntervalSince(started) * 1000)])
@@ -258,13 +244,10 @@ func estimate(_ args: Arguments) throws {
             case .pdf: kinds.append("\(number(count)) PDFs (\(number(estimate.pdfPagesTotal)) pages; \(number(estimate.pdfPages)) in the first pass)")
             case .audio: kinds.append("\(number(count)) audio (\(duration(estimate.audioSeconds)))")
             case .video: kinds.append("\(number(count)) video (\(duration(estimate.videoSeconds)))")
-            case .code: kinds.append("\(number(count)) code \(count == 1 ? "file" : "files") "
-                                     + "(\(number(estimate.codeStretches)) stretches)")
             default: kinds.append("\(number(count)) \(kind.rawValue)\(count == 1 ? "" : "s")")
             }
         }
-        print("\(tilde(folder.path))    first index ≈ \(duration(estimate.seconds))"
-              + (args.code ? ", index ≈ \(ByteCountFormatter.string(fromByteCount: Int64(estimate.bytes), countStyle: .file))" : ""))
+        print("\(tilde(folder.path))    first index ≈ \(duration(estimate.seconds))")
         print("  " + (kinds.isEmpty ? "nothing to index" : kinds.joined(separator: " · ")))
         if estimate.longFiles > 0 {
             print("  then the rest of \(number(estimate.longFiles)) long \(estimate.longFiles == 1 ? "file" : "files") "
@@ -330,30 +313,24 @@ func statesLine(_ states: [String: Int]) -> String {
     states.sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: " · ")
 }
 
-/// Embeds queries with the text model alone (0.3B params, ~0.25 GB): the query encoder. `prompt`: the search's
-/// (`Prompts.query`, or `Prompts.codeQuery` for the code index).
-func queryVectors(_ queries: [String], store: IndexStore, searcher: Searcher,
-                  prompt: (String) -> String = Prompts.query) throws -> [[Float]]? {
+/// Embeds queries with the text model alone (0.3B params, ~0.25 GB): the query encoder.
+func queryVectors(_ queries: [String], store: IndexStore, searcher: Searcher) throws -> [[Float]]? {
     guard searcher.vectorCount > 0, !queries.isEmpty else { return nil }
     let worker = try makeEmbedder(textOnly: true, log: store.directory.appendingPathComponent("worker-query.log"))
     defer { worker.close() }
     if let source = searcher.vectorSource, source != worker.info.vectorSource {
         throw CLIError("index vectors come from \(source) but the query encoder is \(worker.info.vectorSource)")
     }
-    return try worker.embedTexts(queries.map(prompt))
+    return try worker.embedTexts(queries.map(Prompts.query))
 }
 
 func search(_ args: Arguments) throws {
-    var query = args.positional.joined(separator: " ")
+    let query = args.positional.joined(separator: " ")
     guard !query.isEmpty else { throw CLIError("search for what?") }
-    let code = CodeQuery.text(of: query)
-    if let code { query = code }
-    guard !query.isEmpty else { throw CLIError("search the code for what?") }
-    let store = try IndexStore(directory: args.indexFolder, file: code == nil ? IndexStore.mainFile : IndexStore.codeFile)
+    let store = try IndexStore(directory: args.indexFolder)
     let searcher = try Searcher(store: store)
     let started = Date()
-    let vector = try queryVectors([query], store: store, searcher: searcher,
-                                  prompt: code == nil ? Prompts.query : Prompts.codeQuery)?.first
+    let vector = try queryVectors([query], store: store, searcher: searcher)?.first
     let encoded = Date()
     let hits = try searcher.search(query, queryVector: vector, kinds: try args.kinds(), people: try args.people(),
                                    limit: args.values["-n"].flatMap(Int.init) ?? 10, zGate: args.zGate,
@@ -368,7 +345,6 @@ func search(_ args: Arguments) throws {
             if let rank = hit.keywordRank { row["keyword_rank"] = rank }
             if let loc = hit.loc { row["loc"] = loc }
             if let end = hit.locEnd { row["loc_end"] = end }
-            if let focus = hit.focus { row["focus"] = focus }
             if let excerpt = hit.excerpt { row["excerpt"] = excerpt }
             return row
         }
@@ -432,31 +408,21 @@ func status(_ args: Arguments) throws {
 
 /// The app's indexing helper: sync + index on request, JSON events out (IndexService.swift).
 func indexService(_ args: Arguments) throws -> Int32 {
-    // One model for both indexes, started when the first file needs it (`SharedEmbedder`).
     let model = SharedEmbedder {
         try makeEmbedder(textOnly: false, log: args.indexFolder.appendingPathComponent("worker.log"), qos: .utility)
     }
-    func part(_ file: String, options: IndexOptions, roots: [URL]) throws -> IndexService.Part {
-        let store = try IndexStore(directory: args.indexFolder, file: file)
-        let indexer = try Indexer(store: store, options: options, makeEmbedder: { try model.embedder() })
-        // A new app version may bring a new model: the index starts over by itself (keyword search on names goes on).
-        indexer.embedderSource = embedderSource()
-        indexer.resetOnModelChange = { indexed, now in
-            emit(["event": "reindex", "from": indexed, "to": now, "code": options.code])
-        }
-        // A chosen folder that isn't there now (an unplugged drive) is skipped, not an error, and its files stay
-        // indexed. With --prune, files under none of the given folders leave the index (the app passes all its folders).
-        return IndexService.Part(store: store, indexer: indexer, roots: roots,
-                                 keepOnly: args.flags.contains("--prune") ? roots : nil)
+    let store = try IndexStore(directory: args.indexFolder)
+    let indexer = try Indexer(store: store, options: args.options, makeEmbedder: { try model.embedder() })
+    // A new app version may bring a new model: the index starts over by itself (keyword search on names goes on).
+    indexer.embedderSource = embedderSource()
+    indexer.resetOnModelChange = { indexed, now in
+        emit(["event": "reindex", "from": indexed, "to": now])
     }
-    var codeOptions = args.options
-    codeOptions.code = true
-    codeOptions.excludedFolders = (args.lists["--code-exclude"] ?? []).map { Arguments.folderURL($0).path }
-    let codeRoots = (args.lists["--code-root"] ?? []).map(Arguments.folderURL)
-    let service = IndexService(main: try part(IndexStore.mainFile, options: args.options,
-                                              roots: args.positional.map(Arguments.folderURL)),
-                               code: codeRoots.isEmpty ? nil : try part(IndexStore.codeFile, options: codeOptions,
-                                                                        roots: codeRoots),
+    let roots = args.positional.map(Arguments.folderURL)
+    // A chosen folder that isn't there now (an unplugged drive) is skipped, not an error, and its files stay
+    // indexed. With --prune, files under none of the given folders leave the index (the app passes all its folders).
+    let service = IndexService(main: IndexService.Part(store: store, indexer: indexer, roots: roots,
+                                                       keepOnly: args.flags.contains("--prune") ? roots : nil),
                                model: model,
                                modelReady: { embedderSource() == nil || LlamaModels.complete },
                                backfill: args.flags.contains("--backfill"),
@@ -482,28 +448,17 @@ func evaluate(_ args: Arguments) throws {
     guard let file = args.positional.first else { throw CLIError("which eval file?") }
     let eval = try JSONDecoder().decode(EvalFile.self, from: Data(contentsOf: URL(fileURLWithPath: (file as NSString).expandingTildeInPath)))
     let base = (eval.base as NSString).expandingTildeInPath
-    // "code: …" queries search the code index (with its prompt), the others the main one.
-    let isCode = eval.queries.map { CodeQuery.text(of: $0.q) != nil }
-    let texts = eval.queries.map { CodeQuery.text(of: $0.q) ?? $0.q }
-    var searchers: [Bool: Searcher] = [:]
-    var vectors = [[Float]?](repeating: nil, count: texts.count)
-    for code in Set(isCode) {
-        let store = try IndexStore(directory: args.indexFolder, file: code ? IndexStore.codeFile : IndexStore.mainFile)
-        let searcher = try Searcher(store: store)
-        searchers[code] = searcher
-        let indices = texts.indices.filter { isCode[$0] == code }
-        let embedded = try queryVectors(indices.map { texts[$0] }, store: store, searcher: searcher,
-                                        prompt: code ? Prompts.codeQuery : Prompts.query)
-        for (index, vector) in zip(indices, embedded ?? []) { vectors[index] = vector }
-    }
+    let store = try IndexStore(directory: args.indexFolder)
+    let searcher = try Searcher(store: store)
+    let vectors = try queryVectors(eval.queries.map(\.q), store: store, searcher: searcher) ?? []
     let depth = args.values["-n"].flatMap(Int.init) ?? 10
 
     var byTag: [String: (n: Int, at1: Int, at5: Int, at10: Int, mrr: Double)] = [:]
     var shown = 0, listed = 0, folded = 0   // the app's weaker-matches fold (Searcher.strongCount), over all queries
     for (index, query) in eval.queries.enumerated() {
         let kinds = query.kind.flatMap { FileKind(rawValue: $0) }.map { Set([$0]) }
-        let hits = try searchers[isCode[index]]!.search(texts[index], queryVector: vectors[index], kinds: kinds,
-                                                       limit: depth, zGate: args.zGate, wordWeight: args.wordWeight)
+        let hits = try searcher.search(query.q, queryVector: index < vectors.count ? vectors[index] : nil, kinds: kinds,
+                                       limit: depth, zGate: args.zGate, wordWeight: args.wordWeight)
         let strong = Searcher.strongCount(hits)
         shown += strong
         listed += hits.count
@@ -512,10 +467,9 @@ func evaluate(_ args: Arguments) throws {
             let range = parts.count == 2 ? parts[1].split(separator: "-").compactMap { Double($0) } : []
             return (base + "/" + parts[0], range.count == 2 ? range[0]...range[1] : nil)
         }
-        // A place to be at: a page or moment starts in the range; a stretch of code overlaps it (its lines or cells).
+        // A place to be at: a page or moment starts in the range.
         func at(_ hit: SearchHit, _ range: ClosedRange<Double>) -> Bool {
             guard let loc = hit.loc else { return false }
-            if hit.segment == .lines || hit.segment == .cells { return loc <= range.upperBound && (hit.locEnd ?? loc) >= range.lowerBound }
             return range.contains(loc)
         }
         let rank = hits.firstIndex { hit in

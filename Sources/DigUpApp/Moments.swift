@@ -40,18 +40,10 @@ extension ResultRow {
     }
 
     /// "Open at 0:06" when the recording's app can be told the moment (QuickTime Player, IINA), else "Open". A PDF
-    /// opens with your words in Preview's search, but Preview doesn't go to the page by itself. Code opens in the
-    /// editor chosen for it: "Open in Zed".
+    /// opens with your words in Preview's search, but Preview doesn't go to the page by itself.
     var openTitle: String {
-        if kind == .code, !CodeEditor.current.id.isEmpty { return "Open in \(CodeEditor.current.name)" }
         if let moment, moment >= 1, Opener.jumpsToMoments(url) { return "Open at \(Self.clock(moment))" }
         return "Open"
-    }
-
-    /// The line a code result opens at: where the name is defined or the query's words are, else where its stretch
-    /// starts (a notebook's at its top: editors can't be told a cell).
-    var codeLine: Int {
-        segment == .lines ? max(1, Int(focus ?? loc ?? 1)) : 1
     }
 }
 
@@ -81,7 +73,6 @@ extension Engine {
     /// Opens `row` in its app: a PDF with words from its page to search for, a recording at its moment when the app
     /// can be told it (see `Opener`).
     func open(_ row: ResultRow) {
-        if row.kind == .code { return CodeEditor.current.open(row.url, line: row.codeLine) }
         guard let page = row.page else { return Opener.open(row, searching: nil) }
         let (url, words) = (row.url, row.foundWords + row.terms)
         Task {

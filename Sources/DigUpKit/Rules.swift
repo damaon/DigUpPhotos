@@ -36,54 +36,6 @@ public enum Rules {
 
     static let screenshotPrefixes = ["Screenshot", "Screen Shot", "CleanShot", "SCR-"]
 
-    // MARK: Code (the code index, `IndexOptions.code`)
-
-    /// Source files code search reads.
-    static let sourceExtensions: Set<String> = [
-        "py", "pyi", "pyx", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx", "m", "mm", "swift", "ts", "tsx", "mts",
-        "cts", "js", "jsx", "mjs", "cjs", "go", "rs", "java", "kt", "kts", "scala", "groovy", "rb", "php", "cs", "fs",
-        "sh", "bash", "zsh", "fish", "ps1", "lua", "pl", "pm", "r", "jl", "dart", "sql", "vue", "svelte", "astro",
-        "html", "htm", "css", "scss", "sass", "less", "gradle", "cmake", "mk", "proto", "graphql", "gql", "tf", "hcl",
-        "nix", "zig", "hs", "ex", "exs", "erl", "clj", "cljs", "elm", "ml", "mli", "vim", "el", "lisp", "asm", "s",
-        "metal", "glsl", "hlsl", "wgsl", "cu", "cuh", "ino", "v", "sv", "tex",
-    ]
-    /// What goes with code: a repo's docs and its settings.
-    static let codeTextExtensions: Set<String> = ["md", "markdown", "rst", "adoc", "org", "txt", "yaml", "yml", "toml"]
-    /// Code known by its name alone.
-    static let codeFileNames: Set<String> = [
-        "Makefile", "makefile", "GNUmakefile", "Dockerfile", "Containerfile", "Justfile", "justfile", "Rakefile",
-        "Gemfile", "Podfile", "Brewfile", "Procfile", "Vagrantfile", "Jenkinsfile",
-    ]
-    /// Folders code search doesn't go into, besides what git ignores: other people's code kept in a repo (vendor/,
-    /// third_party/), what builds and runs leave (build/, dist/, a wandb run's copy of the code), for repos whose
-    /// .gitignore doesn't list them and folders that aren't in git at all.
-    static let codeSkippedFolderNames: Set<String> = [
-        "vendor", "Vendor", "vendored", "third_party", "third-party", "thirdparty", "3rdparty", "external", "extern",
-        "deps", "build", "Build", "dist", "out", "target", "obj", "coverage", "htmlcov", "generated", "__generated__",
-        "wandb", "mlruns", "lightning_logs",
-    ]
-
-    /// What code search reads in the code folders: source files, a repo's docs and settings, and notebooks. Never data
-    /// (json, csv, lockfiles, logs), minified bundles, licenses, or anything that looks like a key or a password file.
-    public static func classifyCode(_ url: URL, options: IndexOptions) -> Classification {
-        let name = url.lastPathComponent
-        let ext = url.pathExtension.lowercased()
-        if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
-        if isSecret(name) { return .skip("key or password file") }
-        let lower = name.lowercased()
-        if lower.hasSuffix(".min.js") || lower.hasSuffix(".min.mjs") || lower.hasSuffix(".min.css") {
-            return .skip("minified")
-        }
-        if ["license", "licence", "copying", "notice"].contains(where: lower.hasPrefix) { return .skip("license") }
-        if (ext == "ts" || ext == "mts"), isMPEGTransportStream(url) { return .ignore }   // a video
-        if sourceExtensions.contains(ext) || codeTextExtensions.contains(ext) || ext == "ipynb"
-            || codeFileNames.contains(name) || name.hasPrefix("Dockerfile") {
-            return .index(.code)
-        }
-        if codeExtensions.contains(ext) { return .skip("data file") }   // json, csv, lockfiles, logs, plists
-        return .ignore
-    }
-
     /// Keys, certificates, password and credential files: never read, wherever they are.
     static func isSecret(_ name: String) -> Bool {
         let lower = name.lowercased()
@@ -94,32 +46,19 @@ public enum Rules {
                 ".pypirc", "htpasswd", ".htpasswd"].contains(where: lower.hasPrefix)
     }
 
-    /// Why code search doesn't go into a folder (`codeSkippedFolderNames`), or nil.
-    static func codeSkipReason(forFolder url: URL) -> String? {
-        if codeSkippedFolderNames.contains(url.lastPathComponent) { return "vendored or built code" }
-        // A submodule or a worktree (".git" is a file there): someone else's code, or a copy of a repo's own.
-        var isFolder: ObjCBool = false
-        if FileManager.default.fileExists(atPath: url.path + "/.git", isDirectory: &isFolder), !isFolder.boolValue {
-            return "submodule or worktree"
-        }
-        return nil
-    }
-
     public static func classify(_ url: URL, type: UTType?, options: IndexOptions) -> Classification {
         let ext = url.pathExtension.lowercased()
         if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
         // .ts / .mts are usually TypeScript, which Spotlight calls MPEG-2 video. Only a real transport stream is video.
         if ext == "ts" || ext == "mts" || ext == "m2ts" {
             if isMPEGTransportStream(url) { return accept(.video, options) }
-            return options.includeCode ? accept(.doc, options) : .skip("code or data file")
+            return .skip("code or data file")
         }
         if docExtensions.contains(ext) { return accept(.doc, options) }
-        if codeExtensions.contains(ext) {
-            return options.includeCode ? accept(.doc, options) : .skip("code or data file")
-        }
+        if codeExtensions.contains(ext) { return .skip("code or data file") }
         guard let type else { return .ignore }
         if type.conforms(to: .sourceCode) || type.conforms(to: .script) {
-            return options.includeCode ? accept(.doc, options) : .skip("code or data file")
+            return .skip("code or data file")
         }
         if type.conforms(to: .pdf) { return accept(.pdf, options) }
         if type.conforms(to: .image) {

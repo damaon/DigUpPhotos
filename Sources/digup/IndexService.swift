@@ -8,15 +8,14 @@ import Foundation
 /// screenshots, and stayed there), and all of it goes back to the system when this process exits.
 ///
 /// Protocol: one command per line on stdin, one JSON event per line on stdout.
-///   stdin:  sync | sync code | stop | backfill on | backfill off      (EOF = stop)
+///   stdin:  sync | stop | backfill on | backfill off      (EOF = stop)
 ///   stdout: {"event": "missing" | "pruned" | "sync" | "file" | "rest" | "summary" | "waiting" | "idle" | "error" |
-///            "exit", ...}; events about the code index say "code": true
+///            "exit", ...}
 ///
 /// The loop: sync, index what the sync just queued (if it's a few files: new files go first, on any power source),
-/// then the backfill if allowed; then the code index the same way (`--code-root`: its own sync, asked for with
-/// "sync code"); then the rest of long files (`Indexer.finishLongFiles`) under the same rules. Between batches it
-/// yields to a new sync, to stop, and to "backfill off". When it's done it keeps a warm worker for `linger` seconds
-/// (screenshots come in bursts), then exits.
+/// then the backfill if allowed; then the rest of long files (`Indexer.finishLongFiles`) under the same rules.
+/// Between batches it yields to a new sync, to stop, and to "backfill off". When it's done it keeps a warm worker
+/// for `linger` seconds (screenshots come in bursts), then exits.
 ///
 /// Before the model has downloaded it only syncs (file names are searchable at once), says it's "waiting", and exits.
 /// Folders that aren't there (an unplugged drive) or can't be read are skipped, and what was indexed from them stays.
@@ -30,30 +29,25 @@ final class IndexService: @unchecked Sendable {
         let roots: [URL]
         /// When set, files under none of these folders leave the index (folders taken out of the app).
         let keepOnly: [URL]?
-        var code: Bool { store.file.lastPathComponent == IndexStore.codeFile }
     }
 
     private let main: Part
-    /// The code index (`--code-root`), when there are code folders.
-    private let code: Part?
     private let model: SharedEmbedder
     /// The last report of folders that aren't there or can't be read, by index (said again only when it changes).
-    private var unavailable: [Bool: (missing: [String], unreadable: [String])] = [:]
+    private var unavailable: (missing: [String], unreadable: [String])?
     private let modelReady: () -> Bool
     private let newFilesLimit: Int
     private let linger: Double
 
     private let lock = NSLock()
     private var syncRequested = true       // the first thing it does
-    private var codeSyncRequested = true
     private var stopRequested = false
     private var backfillAllowed: Bool
     private let wake = DispatchSemaphore(value: 0)
 
-    init(main: Part, code: Part?, model: SharedEmbedder, modelReady: @escaping () -> Bool, backfill: Bool,
+    init(main: Part, model: SharedEmbedder, modelReady: @escaping () -> Bool, backfill: Bool,
          newFilesLimit: Int, linger: Double) {
         self.main = main
-        self.code = code
         self.model = model
         self.modelReady = modelReady
         self.backfillAllowed = backfill
@@ -61,17 +55,13 @@ final class IndexService: @unchecked Sendable {
         self.linger = linger
     }
 
-    private var parts: [Part] { [main] + (code.map { [$0] } ?? []) }
-
     func serve() -> Int32 {
         removeStaleScratchFolders()
         do {
-            for part in parts {
-                try part.indexer.checkModel()   // a new model: everything is queued again
-                if let keepOnly = part.keepOnly {
-                    let pruned = try part.store.prune(keepingUnder: keepOnly.map(\.path))
-                    if pruned > 0 { emit(["event": "pruned", "files": pruned, "code": part.code]) }
-                }
+            try main.indexer.checkModel()   // a new model: everything is queued again
+            if let keepOnly = main.keepOnly {
+                let pruned = try main.store.prune(keepingUnder: keepOnly.map(\.path))
+                if pruned > 0 { emit(["event": "pruned", "files": pruned]) }
             }
         } catch {
             emit(["event": "error", "message": "\(error)", "fatal": true])
@@ -79,10 +69,10 @@ final class IndexService: @unchecked Sendable {
             return 1
         }
         Thread.detachNewThread { [self] in readCommands() }
-        var newFiles = Set<Int64>(), newCode = Set<Int64>()
+        var newFiles = Set<Int64>()
         while true {
             if lock.withLock({ () -> Bool in defer { syncRequested = false }; return syncRequested }) {
-                sync(main, into: &newFiles)
+                sync(into: &newFiles)
             }
             if lock.withLock({ stopRequested }) { break }
             guard modelReady() else {
@@ -91,37 +81,20 @@ final class IndexService: @unchecked Sendable {
                 break
             }
             if !newFiles.isEmpty {
-                guard run(main, only: newFiles) else { break }
-                newFiles = left(main, of: newFiles)
+                guard run(only: newFiles) else { break }
+                newFiles = left(of: newFiles)
                 continue
             }
             if (try? main.store.pendingCount()) ?? 0 > 0, lock.withLock({ backfillAllowed }) {
-                guard run(main, only: nil) else { break }
+                guard run(only: nil) else { break }
                 if lock.withLock({ syncRequested }) { continue }
-            }
-            // The code index once the main one has nothing waiting: its own sync (code changes come in a while after
-            // they settle), what it just queued at once, the rest under the backfill's rules.
-            if let code, (try? main.store.pendingCount()) ?? 1 == 0 || !lock.withLock({ backfillAllowed }) {
-                if lock.withLock({ () -> Bool in defer { codeSyncRequested = false }; return codeSyncRequested }) {
-                    sync(code, into: &newCode)
-                }
-                if !newCode.isEmpty {
-                    guard run(code, only: newCode) else { break }
-                    newCode = left(code, of: newCode)
-                    continue
-                }
-                if (try? code.store.pendingCount()) ?? 0 > 0, lock.withLock({ backfillAllowed }) {
-                    guard run(code, only: nil) else { break }
-                    if lock.withLock({ syncRequested || codeSyncRequested }) { continue }
-                }
             }
             // Once nothing is waiting: the rest of long PDFs and documents, the same way.
             if lock.withLock({ backfillAllowed }), (try? main.store.pendingCount()) ?? 1 == 0,
-               (try? code?.store.pendingCount() ?? 0) ?? 1 == 0, (try? main.store.unfinishedCount().files) ?? 0 > 0 {
+               (try? main.store.unfinishedCount().files) ?? 0 > 0 {
                 guard finishLongFiles() else { break }
-                if lock.withLock({ syncRequested || codeSyncRequested }) { continue }
+                if lock.withLock({ syncRequested }) { continue }
             }
-            if code != nil, lock.withLock({ codeSyncRequested }) { continue }
             emitCounts("idle")
             // Nothing warm to keep around: leave now. Else wait a little for more work.
             guard model.isRunning, waitForWork() else { break }
@@ -132,15 +105,15 @@ final class IndexService: @unchecked Sendable {
     }
 
     private func finish() {
-        for part in parts { part.indexer.finish() }
+        main.indexer.finish()
         model.close()
     }
 
     /// New files a run stopped before (a sync or stop came first): kept for the next round. Done: anything still
     /// pending joins the backfill.
-    private func left(_ part: Part, of files: Set<Int64>) -> Set<Int64> {
-        let yielded = lock.withLock { syncRequested || stopRequested || (part.code && codeSyncRequested) }
-        return yielded ? Set((try? part.store.pending(limit: nil, only: files).map(\.id)) ?? []) : []
+    private func left(of files: Set<Int64>) -> Set<Int64> {
+        let yielded = lock.withLock { syncRequested || stopRequested }
+        return yielded ? Set((try? main.store.pending(limit: nil, only: files).map(\.id)) ?? []) : []
     }
 
     /// Scratch folders ($TMPDIR/DigUp-<pid>) of indexing processes that are gone (killed mid-batch).
@@ -153,27 +126,26 @@ final class IndexService: @unchecked Sendable {
         }
     }
 
-    /// A part's chosen folders that are there and readable right now; also what `pending` and the counts look at.
-    private func availableRoots(_ part: Part) -> [URL] {
-        let missing = part.roots.filter { !Arguments.isFolder($0) }
-        let unreadable = part.roots.filter { !missing.contains($0) && !Arguments.isReadable($0) }
+    /// The chosen folders that are there and readable right now; also what `pending` and the counts look at.
+    private func availableRoots() -> [URL] {
+        let missing = main.roots.filter { !Arguments.isFolder($0) }
+        let unreadable = main.roots.filter { !missing.contains($0) && !Arguments.isReadable($0) }
         let report = (missing.map(\.path), unreadable.map(\.path))
-        if unavailable[part.code].map({ $0 != report }) ?? !(missing.isEmpty && unreadable.isEmpty) {
-            emit(["event": "missing", "folders": report.0, "unreadable": report.1, "code": part.code])
+        if unavailable.map({ $0 != report }) ?? !(missing.isEmpty && unreadable.isEmpty) {
+            emit(["event": "missing", "folders": report.0, "unreadable": report.1])
         }
-        unavailable[part.code] = report
-        let available = part.roots.filter { !missing.contains($0) && !unreadable.contains($0) }
-        part.store.scope = available.map(\.path)
+        unavailable = report
+        let available = main.roots.filter { !missing.contains($0) && !unreadable.contains($0) }
+        main.store.scope = available.map(\.path)
         return available
     }
 
-    private func sync(_ part: Part, into newFiles: inout Set<Int64>) {
+    private func sync(into newFiles: inout Set<Int64>) {
         let started = Date()
         do {
-            let summary = try part.indexer.sync(availableRoots(part))
+            let summary = try main.indexer.sync(availableRoots())
             if summary.queued.count <= newFilesLimit { newFiles.formUnion(summary.queued) }
             emitCounts("sync", [
-                "code": part.code,
                 "new": newFiles.count,   // about to be indexed, whatever the power source
                 "added": summary.added, "changed": summary.changed, "moved": summary.moved,
                 "removed": summary.removed, "unchanged": summary.unchanged,
@@ -181,32 +153,30 @@ final class IndexService: @unchecked Sendable {
                 "started": started.timeIntervalSince1970,   // the app checks its sync request came before this
             ])
         } catch {
-            emit(["event": "error", "message": "sync failed: \(error)", "code": part.code])
+            emit(["event": "error", "message": "sync failed: \(error)"])
         }
     }
 
-    /// Embeds a part's pending files (`only` some). False when indexing has to stop (the worker died, or the index was
+    /// Embeds pending files (`only` some). False when indexing has to stop (the worker died, or the index was
     /// built with other settings).
-    private func run(_ part: Part, only ids: Set<Int64>?) -> Bool {
+    private func run(only ids: Set<Int64>?) -> Bool {
         let started = Date()
         let isNew = ids != nil
         do {
-            let states = try part.indexer.run(only: ids, shouldStop: { [self] in
-                lock.withLock {
-                    syncRequested || stopRequested || (!isNew && !backfillAllowed) || (part.code && codeSyncRequested)
-                }
+            let states = try main.indexer.run(only: ids, shouldStop: { [self] in
+                lock.withLock { syncRequested || stopRequested || (!isNew && !backfillAllowed) }
             }, onEvent: { event in
                 emit(["event": "file", "new": isNew, "done": event.done, "total": event.total, "path": event.path,
                       "kind": event.kind.rawValue, "state": event.state, "seconds": event.seconds,
-                      "note": event.note ?? "", "code": part.code])
+                      "note": event.note ?? ""])
             })
             if !states.isEmpty {
-                emit(["event": "summary", "new": isNew, "states": states, "code": part.code,
+                emit(["event": "summary", "new": isNew, "states": states,
                       "ms": Int(Date().timeIntervalSince(started) * 1000)])
             }
             return true
         } catch {
-            emit(["event": "error", "message": "\(error)", "fatal": true, "code": part.code])
+            emit(["event": "error", "message": "\(error)", "fatal": true])
             return false
         }
     }
@@ -217,7 +187,7 @@ final class IndexService: @unchecked Sendable {
         let started = Date()
         do {
             let states = try main.indexer.finishLongFiles(shouldStop: { [self] in
-                lock.withLock { syncRequested || codeSyncRequested && code != nil || stopRequested || !backfillAllowed }
+                lock.withLock { syncRequested || stopRequested || !backfillAllowed }
             }, onStep: { step in
                 emit(["event": "rest", "done": step.done, "total": step.total, "files": step.files, "path": step.path,
                       "kind": step.kind.rawValue, "state": step.state, "seconds": step.seconds, "note": step.note ?? ""])
@@ -237,12 +207,10 @@ final class IndexService: @unchecked Sendable {
     private func waitForWork() -> Bool {
         let deadline = DispatchTime.now() + linger
         while wake.wait(timeout: deadline) == .success {
-            let (sync, codeSync, stop, backfill) = lock.withLock {
-                (syncRequested, codeSyncRequested, stopRequested, backfillAllowed)
-            }
+            let (sync, stop, backfill) = lock.withLock { (syncRequested, stopRequested, backfillAllowed) }
             if stop { return false }
-            if sync || codeSync && code != nil { return true }
-            if backfill, parts.contains(where: { (try? $0.store.pendingCount()) ?? 0 > 0 })
+            if sync { return true }
+            if backfill, (try? main.store.pendingCount()) ?? 0 > 0
                 || (try? main.store.unfinishedCount().files) ?? 0 > 0 {
                 return true
             }
@@ -255,7 +223,6 @@ final class IndexService: @unchecked Sendable {
             lock.withLock {
                 switch line.trimmingCharacters(in: .whitespaces) {
                 case "sync": syncRequested = true
-                case "sync code": codeSyncRequested = true
                 case "stop": stopRequested = true
                 case "backfill on": backfillAllowed = true
                 case "backfill off": backfillAllowed = false
@@ -268,13 +235,11 @@ final class IndexService: @unchecked Sendable {
         wake.signal()
     }
 
-    /// An event with both indexes' counts: the main one's as they are, the code index's prefixed "code_".
+    /// An event with the index's counts.
     private func emitCounts(_ event: String, _ extra: [String: Any] = [:]) {
         var fields = extra
         fields["event"] = event
-        for part in parts {
-            guard let counts = try? part.store.counts() else { continue }
-            let prefix = part.code ? "code_" : ""
+        if let counts = try? main.store.counts() {
             var files = 0, searchable = 0, pending = 0
             for states in counts.byKindAndState.values {
                 for (state, count) in states {
@@ -283,18 +248,18 @@ final class IndexService: @unchecked Sendable {
                     if state == "pending" { pending += count }
                 }
             }
-            fields[prefix + "files"] = files
-            fields[prefix + "searchable"] = searchable
-            fields[prefix + "pending"] = pending
-            fields[prefix + "vectors"] = counts.vectors
-            if !part.code { fields["unfinished"] = counts.unfinished }   // long files with pages or chunks left to read
+            fields["files"] = files
+            fields["searchable"] = searchable
+            fields["pending"] = pending
+            fields["vectors"] = counts.vectors
+            fields["unfinished"] = counts.unfinished   // long files with pages or chunks left to read
         }
         emit(fields)
     }
 }
 
-/// One model for both indexes, started when the first file needs it and closed when the helper is done. The indexers
-/// get it as an `Embedder` whose `close` leaves it be, since the other may be using it.
+/// One model, started when the first file needs it and closed when the helper is done. The indexer gets it as an
+/// `Embedder` whose `close` leaves it be.
 final class SharedEmbedder: @unchecked Sendable {
     private let make: () throws -> any Embedder
     private var model: (any Embedder)?

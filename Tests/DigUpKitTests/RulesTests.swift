@@ -23,13 +23,6 @@ import Testing
         #expect(Rules.classify(file, type: .init(filenameExtension: "ts"), options: IndexOptions()) == .index(.video))
     }
 
-    @Test func codeCanBeIncluded() {
-        var options = IndexOptions()
-        options.includeCode = true
-        let file = folder.appendingPathComponent("main.py")
-        #expect(Rules.classify(file, type: .init(filenameExtension: "py"), options: options) == .index(.doc))
-    }
-
     @Test func photosAndVideoSkipsScreenshotsDocsAndAudio() {
         var options = IndexOptions()
         options.kinds = FileKind.photosAndVideo

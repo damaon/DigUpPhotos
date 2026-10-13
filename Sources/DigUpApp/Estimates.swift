@@ -14,8 +14,6 @@ nonisolated struct FolderEstimate: Identifiable, Sendable {
     /// is in: this long.
     var laterSeconds = 0.0
     var longFiles = 0
-    /// For code search: about how big its part of the code index gets on disk.
-    var bytes = 0.0
     /// False when macOS doesn't let DigUp read the folder (it was denied in the privacy prompt).
     let readable: Bool
     /// The estimate never came (the helper stopped early).
@@ -27,16 +25,15 @@ nonisolated struct FolderEstimate: Identifiable, Sendable {
 
 enum Estimates {
     /// Estimates each folder in turn, leaving out what's skipped, calling `update` (on the main actor) as each one
-    /// arrives. `code`: what code search would read there (`digup estimate --code`).
+    /// arrives.
     /// `photosAndVideoOnly`: match the app's default index scope (photos and video, not screenshots/PDFs/…).
-    static func run(_ folders: [URL], excluded: [URL] = [], types: [String] = [], code: Bool = false,
+    static func run(_ folders: [URL], excluded: [URL] = [], types: [String] = [],
                     photosAndVideoOnly: Bool = true,
                     update: @escaping @MainActor @Sendable (FolderEstimate) -> Void) {
         let process = Process()
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/digup")
         var arguments = ["estimate", "--json"]
-        if code { arguments.append("--code") }
-        if photosAndVideoOnly && !code { arguments.append("--photos-video") }
+        if photosAndVideoOnly { arguments.append("--photos-video") }
         for folder in excluded { arguments += ["--exclude", folder.path] }
         if !types.isEmpty { arguments += ["--exclude-ext", types.joined(separator: ",")] }
         process.arguments = arguments + folders.map(\.path)
@@ -95,7 +92,6 @@ enum Estimates {
                               videoSeconds: object["video_seconds"] as? Double ?? 0,
                               laterSeconds: object["later_seconds"] as? Double ?? 0,
                               longFiles: object["long_files"] as? Int ?? 0,
-                              bytes: object["bytes"] as? Double ?? 0,
                               readable: object["readable"] as? Bool ?? true,
                               subfolders: (object["subfolders"] as? [[String: Any]] ?? []).compactMap(decode))
     }
