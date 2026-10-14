@@ -11,9 +11,11 @@ public struct AlbumPhoto: Sendable, Equatable, Identifiable {
     public var quality: Int
     /// People recognized in this photo. Empty when faces were not looked up.
     public var people: Set<Int64>
+    /// Face framing, 0…100. Nil when the photo has no face, so a landscape is not treated as a portrait.
+    public var framing: Int?
 
     public init(id: Int64, path: String, taken: Date, latitude: Double, longitude: Double, quality: Int,
-                people: Set<Int64> = []) {
+                people: Set<Int64> = [], framing: Int? = nil) {
         self.id = id
         self.path = path
         self.taken = taken
@@ -21,6 +23,7 @@ public struct AlbumPhoto: Sendable, Equatable, Identifiable {
         self.longitude = longitude
         self.quality = quality
         self.people = people
+        self.framing = framing
     }
 }
 
@@ -34,9 +37,11 @@ public struct AlbumSourcePhoto: Sendable, Equatable {
     public var latitude: Double?
     public var longitude: Double?
     public var quality: Int
+    /// Face framing, 0…100, when the index stored one.
+    public var framing: Int?
 
     public init(id: Int64, path: String, takenText: String?, modified: Date,
-                latitude: Double?, longitude: Double?, quality: Int) {
+                latitude: Double?, longitude: Double?, quality: Int, framing: Int? = nil) {
         self.id = id
         self.path = path
         self.takenText = takenText
@@ -44,6 +49,7 @@ public struct AlbumSourcePhoto: Sendable, Equatable {
         self.latitude = latitude
         self.longitude = longitude
         self.quality = quality
+        self.framing = framing
     }
 }
 
@@ -131,7 +137,8 @@ public enum AlbumClusterer {
             }
             let taken = CaptureInfo.date(from: source.takenText) ?? source.modified
             ready.append(AlbumPhoto(id: source.id, path: source.path, taken: taken,
-                                    latitude: latitude, longitude: longitude, quality: source.quality))
+                                    latitude: latitude, longitude: longitude, quality: source.quality,
+                                    framing: source.framing))
         }
         return AlbumBuild(albums: albums(from: ready), skipped: skipped, located: ready.count)
     }
@@ -253,7 +260,8 @@ extension IndexStore {
                    json_extract(files.info, '$.taken'),
                    json_extract(files.info, '$.lat'),
                    json_extract(files.info, '$.lon'),
-                   json_extract(files.info, '$.quality')
+                   json_extract(files.info, '$.quality'),
+                   json_extract(files.info, '$.q_frame')
             FROM files
             JOIN faces ON faces.file = files.id
             WHERE files.kind = 'image' AND faces.person IN (\(list))
@@ -265,7 +273,8 @@ extension IndexStore {
                 modified: Date(timeIntervalSince1970: row.double(2)),
                 latitude: row.text(4).flatMap(Double.init),
                 longitude: row.text(5).flatMap(Double.init),
-                quality: row.text(6).flatMap(Int.init) ?? 0))
+                quality: row.text(6).flatMap(Int.init) ?? 0,
+                framing: row.text(7).flatMap(Int.init)))
         }
         return photos
     }
@@ -278,7 +287,8 @@ extension IndexStore {
                    json_extract(info, '$.taken'),
                    json_extract(info, '$.lat'),
                    json_extract(info, '$.lon'),
-                   json_extract(info, '$.quality')
+                   json_extract(info, '$.quality'),
+                   json_extract(info, '$.q_frame')
             FROM files
             WHERE kind = 'image'
               AND json_extract(info, '$.lat') IS NOT NULL
@@ -291,7 +301,8 @@ extension IndexStore {
                 id: row.int(0), path: path, takenText: row.text(3),
                 modified: Date(timeIntervalSince1970: row.double(2)),
                 latitude: latitude, longitude: longitude,
-                quality: row.text(6).flatMap(Int.init) ?? 0))
+                quality: row.text(6).flatMap(Int.init) ?? 0,
+                framing: row.text(7).flatMap(Int.init)))
         }
         return photos
     }

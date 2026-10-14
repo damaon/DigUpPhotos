@@ -68,6 +68,11 @@ final class AlbumsModel {
     /// Located photos from the open trip's days and place, including people who were not used to find the trip.
     private(set) var tripPhotos: [AlbumPhoto] = []
     private(set) var tripLoading = false
+    /// Near-duplicate shots from the same moment, collapsed to the best frame.
+    private(set) var stacks: [PhotoStack] = []
+    /// Stacks whose other frames are showing. The id is the best photo.
+    var expandedStacks: Set<Int64> = []
+    private(set) var stacking = false
     /// Coordinate key (`PlaceNames.key`) → "City, Country".
     private(set) var placeNames: [String: String] = [:]
 
@@ -75,6 +80,9 @@ final class AlbumsModel {
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var placeTask: Task<Void, Never>?
     @ObservationIgnored private var tripTask: Task<Void, Never>?
+    @ObservationIgnored private var stackGeneration = 0
+    /// Grayscale prints already measured, so filtering a trip does not read the files again.
+    @ObservationIgnored private var knownPrints: [Int64: [Float]] = [:]
 
     init(engine: Engine) {
         self.engine = engine
@@ -115,6 +123,10 @@ final class AlbumsModel {
         peopleFilter = []
         tripPhotos = []
         tripLoading = true
+        stacks = []
+        expandedStacks = []
+        stacking = false
+        stackGeneration += 1
         tripTask?.cancel()
         tripTask = Task { await loadTrip(album) }
     }
@@ -126,6 +138,24 @@ final class AlbumsModel {
         peopleFilter = []
         tripPhotos = []
         tripLoading = false
+        stacks = []
+        expandedStacks = []
+        stacking = false
+        stackGeneration += 1
+    }
+
+    /// Selects a photo. Clicking the highlighted frame of a stack shows the others, and clicking it again hides them.
+    func choose(_ photo: AlbumPhoto) {
+        if let stack = stacks.first(where: { $0.best == photo.id && $0.members.count > 1 }) {
+            if expandedStacks.contains(stack.best) {
+                expandedStacks.remove(stack.best)
+            } else {
+                expandedStacks.insert(stack.best)
+            }
+            selectedPhoto = stack.best
+            return
+        }
+        selectedPhoto = photo.id
     }
 
     func showEveryone() {
@@ -143,6 +173,11 @@ final class AlbumsModel {
         let base = tripPhotos.isEmpty ? (open?.photos ?? []) : tripPhotos
         guard !peopleFilter.isEmpty else { return base }
         return base.filter { !$0.people.isDisjoint(with: peopleFilter) }
+    }
+
+    /// What the grid shows: one highlighted frame per similar burst, until that frame is opened.
+    var gridPhotos: [AlbumGridPhoto] {
+        PhotoStacks.rows(shownPhotos, stacks: stacks, expanded: expandedStacks)
     }
 
     /// People who appear in the open trip's photos, in name order.
@@ -201,8 +236,35 @@ final class AlbumsModel {
 
     private func keepSelection() {
         let photos = shownPhotos
-        if let selectedPhoto, photos.contains(where: { $0.id == selectedPhoto }) { return }
-        selectedPhoto = photos.first?.id ?? open?.cover
+        if selectedPhoto == nil || !photos.contains(where: { $0.id == selectedPhoto }) {
+            selectedPhoto = photos.first?.id ?? open?.cover
+        }
+        restack()
+    }
+
+    /// Groups shots that look alike and were taken in the same short stretch, then keeps the best frame.
+    private func restack() {
+        stackGeneration += 1
+        let token = stackGeneration
+        let photos = shownPhotos
+        stacks = []
+        expandedStacks = []
+        guard photos.count > 1 else {
+            stacking = false
+            return
+        }
+        stacking = true
+        let known = knownPrints
+        Task {
+            let pass = await Task.detached(priority: .userInitiated) {
+                PhotoStacks.assemble(photos, prints: known)
+            }.value
+            guard token == stackGeneration else { return }
+            knownPrints.merge(pass.prints) { _, new in new }
+            stacks = pass.stacks
+            stacking = false
+            log("albums: \(pass.stacks.count) stacks in \(photos.count) photos")
+        }
     }
 
     private func warmPlaces() {
@@ -612,7 +674,7 @@ private struct AlbumDetail: View {
                 } else {
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 14) {
-                            ForEach(photos) { item in
+                            ForEach(albums.gridPhotos) { item in
                                 photoCell(item)
                             }
                         }
@@ -663,7 +725,7 @@ private struct AlbumDetail: View {
                         .foregroundStyle(.secondary)
                         .padding(.leading, 4)
                 }
-                if albums.tripLoading {
+                if albums.tripLoading || albums.stacking {
                     ProgressView().controlSize(.small).padding(.leading, 4)
                 }
                 ForEach(albums.tripPeople) { person in
@@ -690,15 +752,18 @@ private struct AlbumDetail: View {
         .buttonStyle(.plain)
     }
 
-    private func photoCell(_ item: AlbumPhoto) -> some View {
-        let url = URL(fileURLWithPath: item.path)
-        let featured = album.featured.contains(item.id)
-        let chosen = item.id == photo.id
+    private func photoCell(_ item: AlbumGridPhoto) -> some View {
+        let photo = item.photo
+        let url = URL(fileURLWithPath: photo.path)
+        let featured = album.featured.contains(photo.id)
+        let chosen = photo.id == self.photo.id
+        let stacked = item.isPick && item.stackCount > 1
+        let open = stacked && albums.expandedStacks.contains(photo.id)
         return VStack(spacing: 5) {
             ThumbnailView(url: url, side: 132)
                 .overlay {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(featured ? Brand.amber : Color.clear, lineWidth: 2.5)
+                        .strokeBorder(featured || stacked ? Brand.amber : Color.clear, lineWidth: 2.5)
                 }
                 .overlay(alignment: .topLeading) {
                     if featured {
@@ -710,21 +775,42 @@ private struct AlbumDetail: View {
                             .padding(6)
                     }
                 }
-            Text(AlbumText.day(item.taken))
+                .overlay(alignment: .bottomTrailing) {
+                    if stacked {
+                        Text(open ? "Best" : "\(item.stackCount)")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Brand.ember))
+                            .padding(6)
+                    }
+                }
+            Text(AlbumText.day(photo.taken))
                 .font(.caption)
-                .foregroundStyle(featured ? AnyShapeStyle(Brand.ember) : AnyShapeStyle(.secondary))
+                .foregroundStyle(featured || stacked ? AnyShapeStyle(Brand.ember) : AnyShapeStyle(.secondary))
         }
         .padding(4)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(chosen ? Color.accentColor.opacity(0.12) : Color.clear))
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .gesture(TapGesture(count: 2).onEnded { NSWorkspace.shared.open(url) })
-        .simultaneousGesture(TapGesture().onEnded { albums.selectedPhoto = item.id })
+        .simultaneousGesture(TapGesture().onEnded { albums.choose(photo) })
         .contextMenu {
             Button("Open") { NSWorkspace.shared.open(url) }
             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
-        .help(featured ? "Best · \(AlbumText.day(item.taken))" : AlbumText.day(item.taken))
+        .help(stackHelp(item, featured: featured))
+    }
+
+    private func stackHelp(_ item: AlbumGridPhoto, featured: Bool) -> String {
+        let day = AlbumText.day(item.photo.taken)
+        guard item.isPick, item.stackCount > 1 else {
+            return featured ? "Best · \(day)" : day
+        }
+        let open = albums.expandedStacks.contains(item.photo.id)
+        if open { return "Best of \(item.stackCount) similar. Click to hide the others." }
+        return "Best of \(item.stackCount) similar, taken together. Click to show the others."
     }
 
     private var preview: some View {
@@ -754,6 +840,11 @@ private struct AlbumDetail: View {
                 Text(AlbumText.look(photo.quality))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                if let line = stackLine(photo) {
+                    Text(line)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
                 Text((url.path as NSString).lastPathComponent)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -765,13 +856,20 @@ private struct AlbumDetail: View {
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
             }
             .controlSize(.regular)
-            Text("Everyone from this place, on these days. Pick people to narrow it. Starred photos scored highest.")
+            Text("Everyone from this place, on these days. Pick people to narrow it. Similar shots from the same moment are stacked: the highlighted frame is the best one, and clicking it shows the others. Starred photos scored highest.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
         }
         .padding(16)
+    }
+
+    private func stackLine(_ photo: AlbumPhoto) -> String? {
+        guard let stack = albums.stacks.first(where: { $0.members.contains(photo.id) }), stack.members.count > 1
+        else { return nil }
+        if photo.id == stack.best { return "Best of \(stack.members.count) similar" }
+        return "One of \(stack.members.count) similar"
     }
 }
 

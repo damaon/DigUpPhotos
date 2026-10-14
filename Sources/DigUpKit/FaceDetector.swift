@@ -33,6 +33,38 @@ enum FaceDetector {
             .sorted { $0.boundingBox.width * $0.boundingBox.height > $1.boundingBox.width * $1.boundingBox.height }
     }
 
+    /// 0…1 smile of the largest face, from the shape of the mouth. Nil when no face has a readable mouth.
+    /// Used only to pick a frame inside a stack, so it is not stored and does not change the index.
+    static func smile(in image: CGImage) -> Double? {
+        let request = VNDetectFaceLandmarksRequest()
+        if let cpu = MLComputeDevice.allComputeDevices.first(where: { if case .cpu = $0 { return true }; return false }) {
+            request.setComputeDevice(cpu, for: .main)
+        }
+        try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+        let faces = (request.results ?? [])
+            .sorted { $0.boundingBox.width * $0.boundingBox.height > $1.boundingBox.width * $1.boundingBox.height }
+        for face in faces {
+            guard let lips = face.landmarks?.outerLips, lips.pointCount >= 4 else { continue }
+            return PhotoStacks.smile(mouth: lips.normalizedPoints)
+        }
+        return nil
+    }
+
+    /// Smile of the largest face in the photo file. Nil when the file or the mouth can't be read.
+    static func smile(file path: String) -> Double? {
+        let url = URL(fileURLWithPath: path)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
+        else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 768,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return smile(in: image)
+    }
+
     /// Detects faces in `image` and writes padded crops into `folder`. Tiny detections are dropped.
     static func detect(in image: CGImage, to folder: URL) throws -> [DetectedFace] {
         let observations = observations(in: image).prefix(maxFaces)

@@ -664,7 +664,8 @@ nonisolated final class Engine: @unchecked Sendable {
                     guard let latitude = source.latitude, let longitude = source.longitude else { continue }
                     let taken = CaptureInfo.date(from: source.takenText) ?? source.modified
                     candidates.append(AlbumPhoto(id: source.id, path: source.path, taken: taken,
-                                                 latitude: latitude, longitude: longitude, quality: source.quality))
+                                                 latitude: latitude, longitude: longitude, quality: source.quality,
+                                                 framing: source.framing))
                 }
                 var photos = AlbumClusterer.photos(in: album, from: candidates)
                 let people = (try? searchStore?.peopleByFile(Set(photos.map(\.id)))) ?? [:]
