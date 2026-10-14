@@ -6,6 +6,8 @@ import Observation
 final class AppModel {
     var status = EngineStatus()
     var settings: AppSettings
+    /// A saved OpenRouter key that is complete enough to send.
+    var hasOpenRouterKey = false
     var hotkey: KeyCombo?
     let download: ModelDownload
     /// A newer DigUp the daily check found ("0.6.1"), until you open it (`Updates`).

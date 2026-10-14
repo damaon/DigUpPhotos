@@ -214,6 +214,11 @@ final class SearchModel {
     /// Results per kind for the query, whatever the filter (the counts on the kind buttons).
     private(set) var counts: [ResultGroupKind: Int] = [:]
     private(set) var hasResults = false
+    /// Luna's formal line, when it differs from `query`.
+    private(set) var interpreted: String?
+    /// Why that line was not searched, or why OpenRouter refused.
+    private(set) var rewriteNote: String?
+    private(set) var interpreting = false
     var selection: String?
     var showWeaker = false
     var showsPreview = true
@@ -228,6 +233,12 @@ final class SearchModel {
 
     init(engine: Engine) {
         self.engine = engine
+    }
+
+    /// Runs the current query again after query understanding is switched.
+    func research() {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        run()
     }
 
     func refreshPeople() {
@@ -289,26 +300,46 @@ final class SearchModel {
             results = .empty
             counts = [:]
             hasResults = false
+            interpreted = nil
+            rewriteNote = nil
+            interpreting = false
             return
         }
+        interpreted = nil
+        rewriteNote = nil
+        interpreting = engine.rewritesQueries
+        engine.noteTyped(text)
         engine.prewarm()
-        engine.embedAhead(text)
+        if !engine.rewritesQueries { engine.embedAhead(text) }
         let filter = self.filter
         let people = peopleFilter
         let showAt = ContinuousClock.now + SearchPanelController.typingPause
+        let rewrite = engine.rewritesQueries
         task = Task {
-            let vector = await engine.embedQuery(text)
+            if rewrite {
+                try? await Task.sleep(until: showAt, tolerance: .milliseconds(1), clock: .continuous)
+                guard !Task.isCancelled, current == generation else { return }
+            }
+            let reading = await engine.formalQuery(text)
+            guard !Task.isCancelled, current == generation else { return }
+            interpreting = false
+            interpreted = reading.interpreted
+            rewriteNote = reading.note
+            let asked = reading.search
+            let vector = await engine.embedQuery(asked, typed: text)
             guard !Task.isCancelled, current == generation else { return }
             let peopleArg: Set<Int64>? = people.isEmpty ? nil : people
-            let all = await engine.search(text, vector: vector, prefixLast: false, people: peopleArg, limit: 120)
-            let shown = filter == nil ? all : await engine.search(text, vector: vector, prefixLast: false,
+            let all = await engine.search(asked, vector: vector, prefixLast: false, people: peopleArg, limit: 120)
+            let shown = filter == nil ? all : await engine.search(asked, vector: vector, prefixLast: false,
                                                                     kinds: filter!.kinds, people: peopleArg, limit: 120)
-            try? await Task.sleep(until: showAt, tolerance: .milliseconds(1), clock: .continuous)
+            if !rewrite {
+                try? await Task.sleep(until: showAt, tolerance: .milliseconds(1), clock: .continuous)
+            }
             guard !Task.isCancelled, current == generation else { return }
             var counts: [ResultGroupKind: Int] = [:]
             for hit in all.prefix(Searcher.strongCount(all)) { counts[ResultGroupKind(hit.kind), default: 0] += 1 }
             self.counts = counts
-            results = ResultSet(shown, query: text)
+            results = ResultSet(shown, query: asked)
             showWeaker = false
             if !rows.contains(where: { $0.id == selection }) { selection = rows.first?.id }
             hasResults = true
@@ -366,6 +397,9 @@ struct SearchWindowView: View {
                         .frame(width: 22)
                     SearchField(text: $search.query, fontSize: 18, placeholder: placeholder,
                                 onMake: { search.field = $0 }, onFocus: { fieldFocused = $0 })
+                    QueryUnderstandingToggle(
+                        active: model.settings.queryUnderstanding && model.hasOpenRouterKey,
+                        toggle: { app.toggleQueryUnderstanding() })
                     if !search.query.isEmpty {
                         Button {
                             search.query = ""
@@ -413,6 +447,13 @@ struct SearchWindowView: View {
             }
             .padding(.leading, 78)   // beside the window buttons
             .frame(height: 52)
+            if search.interpreting || search.interpreted != nil || search.rewriteNote != nil {
+                QueryInterpretation(interpreting: search.interpreting, line: search.interpreted,
+                                    note: search.rewriteNote,
+                                    apply: { if let line = search.interpreted { search.query = line } },
+                                    openSettings: { app.showSettings() })
+                    .padding(.leading, 90)
+            }
             KindFilters(search: search,
                         photosAndVideoOnly: model.settings.photosAndVideoOnly)
             if !search.people.isEmpty {

@@ -107,7 +107,7 @@ public final class Searcher {
     /// means no people filter.
     public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil,
                        people: Set<Int64>? = nil, limit: Int = 20, zGate: Double = 2.0, wordWeight: Double? = nil,
-                       prefixLast: Bool = false, negativeVectors: [[Float]] = []) throws -> [SearchHit] {
+                       prefixLast: Bool = false, clauseVectors: [[Float]] = []) throws -> [SearchHit] {
         let wordWeight = wordWeight ?? Self.wordWeight
         if queryVector != nil, !vectorsLoaded { try reload() }
         let fileKind = self.fileKind
@@ -166,53 +166,50 @@ public final class Searcher {
         // Photos also get a light boost from `info.quality` (0…100); queries that ask for nice/best photos lean on it more.
         let lookup = Self.isLookup(terms)
         let (meaningWeight, wordsWeight) = lookup ? (0.5, wordWeight * 2) : (1, wordWeight)
+        let parsed = Self.parse(text)
         let hinted = Self.kindHints(text)
         let wantNice = Self.wantsNicePhotos(text)
-        var candidates = Set(best.filter { $0.value.z >= zGate }.keys)
-        for (file, share) in coverage where share >= 0.5 { candidates.insert(file) }
-        let quality = try photoQuality(of: candidates, kinds: fileKind)
+        let phrases = parsed.expression.phrases
+        let boolean = parsed.hasOperators && clauseVectors.count == phrases.count
+            && clauseVectors.allSatisfy { $0.count == Vectors.dimension }
+        var keywordHits = words
         var scored: [Int64: Double] = [:]
-        for file in candidates {
-            var score = meaningWeight * max(best[file]?.z ?? 0, 0) + wordsWeight * pow(coverage[file] ?? 0, 1.5)
-            if let kind = fileKind[file], hinted.contains(kind) { score += 1 }
-            if let q = quality[file] {
-                // Mild by default so meaning still leads; "best/beautiful/ładne" leans harder on look.
-                score += (wantNice ? 1.4 : 0.35) * (q / 100)
-            }
-            scored[file] = score
-        }
-        // "without rice": the ask is rank 1, each excluded concept is rank 2, and a file's place is rank 1 minus
-        // how well it matches the exclusion (its meaning, or the word itself when that's stronger).
-        let excluded = Self.ranked(text).excluded
-        if !excluded.isEmpty {
-            var penalty: [Int64: Double] = [:]
-            for vector in negativeVectors where vector.count == Vectors.dimension {
-                let scores = score(vector)
-                let meaning = Self.meaning(scores, rowModality, setsScale: rowSetsScale)
-                for row in 0..<scores.count where allowed(rowFile[row]) {
-                    let z = meaning[row]
-                    guard z > 0 else { continue }
-                    let file = rowFile[row]
-                    if z > (penalty[file] ?? 0) { penalty[file] = z }
+        if boolean {
+            // Each phrase is its own embedding. `and` keeps a photo only when every part matches, `or` when any
+            // does, and `-` drops a photo whose picture matches that embedding.
+            let clauses = clauseVectors.map { matches(for: $0, allowed: allowed) }
+            var matched: [Int64: (score: Double, z: Double, cosine: Double, row: Int)] = [:]
+            let files = Set(clauses.flatMap(\.keys))
+            for file in files where allowed(file) {
+                if let hit = Self.evaluate(parsed.expression, file: file, clauses: clauses, gate: zGate) {
+                    matched[file] = hit
                 }
             }
-            let patterns = Self.patterns(Self.terms(excluded.joined(separator: " ")), prefixLast: prefixLast)
-            if !patterns.isEmpty {
-                try store.db.query("""
-                    SELECT DISTINCT s.file FROM fts JOIN segments s ON s.id = fts.rowid
-                    WHERE fts MATCH ?
-                    """, [.text(patterns.joined(separator: " OR "))]) { row in
-                    let file = row.int(0)
-                    guard allowed(file) else { return }
-                    penalty[file] = max(penalty[file] ?? 0, zGate)
-                }
+            best = Dictionary(uniqueKeysWithValues: matched.map { ($0.key, (z: $0.value.z, cosine: $0.value.cosine, row: $0.value.row)) })
+            let quality = try photoQuality(of: Set(matched.keys), kinds: fileKind)
+            for (file, hit) in matched {
+                var score = hit.score
+                if let kind = fileKind[file], hinted.contains(kind) { score += 1 }
+                if let q = quality[file] { score += (wantNice ? 1.4 : 0.35) * (q / 100) }
+                scored[file] = score
             }
-            for (file, down) in penalty where scored[file] != nil {
-                scored[file]! -= down
+            keywordHits = []
+        } else {
+            var candidates = Set(best.filter { $0.value.z >= zGate }.keys)
+            for (file, share) in coverage where share >= 0.5 { candidates.insert(file) }
+            let quality = try photoQuality(of: candidates, kinds: fileKind)
+            for file in candidates {
+                var score = meaningWeight * max(best[file]?.z ?? 0, 0) + wordsWeight * pow(coverage[file] ?? 0, 1.5)
+                if let kind = fileKind[file], hinted.contains(kind) { score += 1 }
+                if let q = quality[file] {
+                    // Mild by default so meaning still leads; "best/beautiful/ładne" leans harder on look.
+                    score += (wantNice ? 1.4 : 0.35) * (q / 100)
+                }
+                scored[file] = score
             }
         }
 
-        let wordRank = Dictionary(words.enumerated().map { ($0.element.file, ($0.offset + 1, $0.element)) },
+        let wordRank = Dictionary(keywordHits.enumerated().map { ($0.element.file, ($0.offset + 1, $0.element)) },
                                   uniquingKeysWith: { first, _ in first })
         var hits: [SearchHit] = []
         for (file, score) in scored.sorted(by: { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) })
@@ -276,6 +273,19 @@ public final class Searcher {
     public static func strongCount(_ hits: [SearchHit], ratio: Double = 0.5) -> Int {
         guard let top = hits.first?.score, top > 0 else { return hits.count }
         return hits.prefix { $0.score >= top * ratio }.count
+    }
+
+    /// One clause's best segment per file. `allowed` is the kind and people filter from `search`.
+    private func matches(for vector: [Float], allowed: (Int64) -> Bool) -> [Int64: (z: Double, cosine: Double, row: Int)] {
+        guard vector.count == Vectors.dimension, !rowFile.isEmpty else { return [:] }
+        let scores = score(vector)
+        let meaning = Self.meaning(scores, rowModality, setsScale: rowSetsScale)
+        var best: [Int64: (z: Double, cosine: Double, row: Int)] = [:]
+        for row in 0..<scores.count where allowed(rowFile[row]) {
+            let z = meaning[row]
+            if z > (best[rowFile[row]]?.z ?? -.infinity) { best[rowFile[row]] = (z, Double(scores[row]), row) }
+        }
+        return best
     }
 
     /// Cosine similarity of `query` with every stored vector (all are L2-normalized): a matrix-vector product, done a
@@ -355,52 +365,219 @@ public final class Searcher {
         return text
     }
 
-    /// A query split into what to find and what to rank below it.
-    /// "best photos without rice" → find "best photos", then subtract matches of "rice".
-    public struct RankedQuery: Sendable, Equatable {
-        public var positive: String
-        public var excluded: [String]
+    /// A boolean query. A plain question with no `and`, `or`, `-`, or parentheses stays one phrase, embedded as written.
+    /// `and` binds tighter than `or`. `-` (also a leading `-word`) excludes the next phrase or parenthesized group
+    /// and combines with what came before: `person - screenshot` is a person and not a screenshot.
+    /// `(person or cat) - screenshot` excludes screenshots from either.
+    public indirect enum QueryExpr: Sendable, Equatable {
+        case phrase(String)
+        case and([QueryExpr])
+        case or([QueryExpr])
+        case not(QueryExpr)
 
-        public init(positive: String, excluded: [String]) {
-            self.positive = positive
-            self.excluded = excluded
+        /// Every phrase, in the order `embedPhrases` embeds them. An exclusion still needs a vector.
+        var phrases: [String] {
+            switch self {
+            case .phrase(let text): return text.isEmpty ? [] : [text]
+            case .and(let parts), .or(let parts): return parts.flatMap(\.phrases)
+            case .not(let inner): return inner.phrases
+            }
+        }
+
+        /// Phrases that must be found. Exclusions are left out, so "screenshot" in `person - screenshot` is not a
+        /// kind hint and not a keyword.
+        var positivePhrases: [String] {
+            switch self {
+            case .phrase(let text): return text.isEmpty ? [] : [text]
+            case .and(let parts), .or(let parts): return parts.flatMap(\.positivePhrases)
+            case .not: return []
+            }
+        }
+
+        public var summary: String {
+            switch self {
+            case .phrase(let text): return "“\(text)”"
+            case .and(let parts): return parts.map(\.summary).joined(separator: " and ")
+            case .or(let parts): return parts.map(\.summary).joined(separator: " or ")
+            case .not(let inner): return "- \(inner.summary)"
+            }
         }
     }
 
-    /// Words that start an exclusion: the rest of the query is ranked against the part before them.
-    static let negationWords: Set<String> = ["without", "except", "minus", "not", "bez", "poza", "nie"]
-
-    /// "best photos without rice" → positive "best photos", excluded ["rice"].
-    /// With no exclusion, `positive` is the text as written.
-    public static func ranked(_ text: String) -> RankedQuery {
-        var prepared = SearchText.normalized(text)
-        prepared = prepared.replacingOccurrences(of: "w/o", with: " without ", options: [.caseInsensitive])
-        let words = prepared.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
-        var positive: [String] = []
-        var excluded: [String] = []
-        var excluding = false
-        for word in words {
-            let lower = word.lowercased()
-            if negationWords.contains(lower) {
-                excluding = true
-                continue
-            }
-            if excluding {
-                if lower == "and" || lower == "or" || lower == "nor" || lower == "i" { continue }
-                excluded.append(lower)
-            } else {
-                positive.append(word)
-            }
-        }
-        guard excluding else { return RankedQuery(positive: text, excluded: []) }
-        return RankedQuery(positive: positive.joined(separator: " "), excluded: excluded)
+    public struct ParsedQuery: Sendable, Equatable {
+        public var expression: QueryExpr
+        /// False when the text has no operator and no parentheses: one embedding of the text as written.
+        public var hasOperators: Bool
+        public var positiveText: String { expression.positivePhrases.joined(separator: " ") }
     }
 
-    /// Phrases to embed, positive first. Exclusions follow, so their vectors can be subtracted.
+    /// `person - screenshot`, `person and screenshot`, `person or screenshot`, `(person or cat) - screenshot`.
+    public static func parse(_ text: String) -> ParsedQuery {
+        let tokens = QueryParser.tokenize(text)
+        let operated = tokens.contains { token in
+            switch token {
+            case .and, .or, .minus, .lparen, .rparen: return true
+            case .word: return false
+            }
+        }
+        guard operated else { return ParsedQuery(expression: .phrase(text), hasOperators: false) }
+        var parser = QueryParser(tokens: tokens)
+        return ParsedQuery(expression: parser.parseOr(), hasOperators: true)
+    }
+
+    /// Whether `file` satisfies `expr`. `clauses` lines up with `expr.phrases`. A phrase matches at `gate`.
+    /// `and` requires every part; `or` any part; `not` hides a match instead of ranking it lower.
+    static func evaluate(_ expr: QueryExpr, file: Int64,
+                         clauses: [[Int64: (z: Double, cosine: Double, row: Int)]], gate: Double)
+        -> (score: Double, z: Double, cosine: Double, row: Int)? {
+        var index = 0
+        func walk(_ expr: QueryExpr) -> (ok: Bool, score: Double, z: Double, cosine: Double, row: Int?) {
+            switch expr {
+            case .phrase:
+                let slot = index
+                index += 1
+                guard slot < clauses.count, let hit = clauses[slot][file] else { return (false, 0, 0, 0, nil) }
+                return (hit.z >= gate, hit.z, hit.z, hit.cosine, hit.row)
+            case .not(let inner):
+                let inner = walk(inner)
+                return (!inner.ok, 0, 0, 0, nil)
+            case .and(let parts):
+                var limiting = Double.infinity
+                var cosine = 0.0
+                var row: Int?
+                var ok = true
+                var sawPositive = false
+                for part in parts {
+                    let piece = walk(part)
+                    guard piece.ok else { ok = false; continue }
+                    // An exclusion succeeds with no row. It hides matches and does not pull the score down.
+                    guard piece.row != nil else { continue }
+                    sawPositive = true
+                    if piece.z < limiting { (limiting, cosine, row) = (piece.z, piece.cosine, piece.row) }
+                }
+                guard ok, sawPositive, let row else { return (false, 0, 0, 0, nil) }
+                return (true, limiting, limiting, cosine, row)
+            case .or(let parts):
+                var best: (ok: Bool, score: Double, z: Double, cosine: Double, row: Int?) = (false, -.infinity, 0, 0, nil)
+                for part in parts {
+                    let piece = walk(part)
+                    if piece.ok, piece.score >= best.score { best = piece }
+                }
+                guard best.ok, let row = best.row else { return (false, 0, 0, 0, nil) }
+                return (true, best.score, best.z, best.cosine, row)
+            }
+        }
+        let result = walk(expr)
+        guard result.ok, let row = result.row else { return nil }
+        return (result.score, result.z, result.cosine, row)
+    }
+
+    /// Phrases to embed, in `QueryExpr.phrases` order. A query with no operators embeds the original text as one vector.
     public static func embedPhrases(_ text: String) -> [String] {
-        let query = ranked(text)
-        guard !query.excluded.isEmpty else { return [text] }
-        return (query.positive.isEmpty ? [] : [query.positive]) + query.excluded
+        let query = parse(text)
+        guard query.hasOperators else { return [text] }
+        let phrases = query.expression.phrases
+        return phrases.isEmpty ? [text] : phrases
+    }
+
+    /// Words, `and` / `or` / `-`, and parentheses. A hyphen inside a word (`well-known`) stays part of the word.
+    private struct QueryParser {
+        enum Token: Equatable {
+            case word(String)
+            case and, or, minus, lparen, rparen
+        }
+
+        var tokens: [Token]
+        var index = 0
+
+        static func tokenize(_ text: String) -> [Token] {
+            var tokens: [Token] = []
+            for raw in text.split(whereSeparator: \.isWhitespace) {
+                var piece = String(raw)
+                while piece.hasPrefix("(") {
+                    tokens.append(.lparen)
+                    piece.removeFirst()
+                }
+                var closing: [Token] = []
+                while piece.hasSuffix(")") {
+                    closing.append(.rparen)
+                    piece.removeLast()
+                }
+                switch piece.lowercased() {
+                case "": break
+                case "and": tokens.append(.and)
+                case "or": tokens.append(.or)
+                case "-": tokens.append(.minus)
+                default:
+                    if piece.hasPrefix("-"), piece.count > 1 {
+                        tokens.append(.minus)
+                        tokens.append(.word(String(piece.dropFirst())))
+                    } else {
+                        tokens.append(.word(piece))
+                    }
+                }
+                tokens.append(contentsOf: closing)
+            }
+            return tokens
+        }
+
+        private func peek() -> Token? { index < tokens.count ? tokens[index] : nil }
+
+        private mutating func consume(_ token: Token) -> Bool {
+            guard peek() == token else { return false }
+            index += 1
+            return true
+        }
+
+        fileprivate mutating func parseOr() -> QueryExpr {
+            var parts = [parseAnd()]
+            while consume(.or) { parts.append(parseAnd()) }
+            return flatten({ .or($0) }, parts)
+        }
+
+        private mutating func parseAnd() -> QueryExpr {
+            var parts = [parseUnary()]
+            while true {
+                if consume(.and) {
+                    parts.append(parseUnary())
+                } else if consume(.minus) {
+                    parts.append(.not(parseUnary()))
+                } else {
+                    break
+                }
+            }
+            return flatten({ .and($0) }, parts)
+        }
+
+        private mutating func parseUnary() -> QueryExpr {
+            if consume(.minus) { return .not(parseUnary()) }
+            return parsePrimary()
+        }
+
+        private mutating func parsePrimary() -> QueryExpr {
+            if consume(.lparen) {
+                let inner = parseOr()
+                _ = consume(.rparen)
+                return inner
+            }
+            var words: [String] = []
+            while case .word(let word) = peek() {
+                words.append(word)
+                index += 1
+            }
+            return .phrase(words.joined(separator: " "))
+        }
+
+        /// Drops an empty phrase (`and` with nothing after it) and unwraps a single part.
+        private func flatten(_ join: ([QueryExpr]) -> QueryExpr, _ parts: [QueryExpr]) -> QueryExpr {
+            let kept = parts.filter { expr in
+                if case .phrase(let text) = expr { return !text.isEmpty }
+                return true
+            }
+            if kept.count == 1 { return kept[0] }
+            if kept.isEmpty { return .phrase("") }
+            return join(kept)
+        }
     }
 
     static let stopwords: Set<String> = [
@@ -411,8 +588,7 @@ public final class Searcher {
         // Aesthetic asks ("best photos of…"): they steer ranking via `wantsNicePhotos`, not keyword search.
         "best", "nicest", "nice", "beautiful", "pretty", "gorgeous", "stunning", "lovely", "favorite", "favourite",
         "sharpest", "clearest", "aesthetic", "ładne", "ładnych", "ładny", "ładna", "najładniejsze", "najładniejszych",
-        "piękne", "pięknych", "fajne", "najlepsze", "najlepszych", "without", "except", "minus", "not", "bez", "poza",
-        "nie",
+        "piękne", "pięknych", "fajne", "najlepsze", "najlepszych",
         // Bengali and Arabic (normalized, as `terms` sees them)
         "এবং", "ও", "এই", "সেই", "একটি", "আমার", "থেকে", "জন্য", "সাথে", "মধ্যে", "কোথায়", "কোন", "কী", "কি", "যে",
         "ছবি", "স্ক্রিনশট", "ভিডিও", "ফাইল", "পিডিএফ",
@@ -424,7 +600,7 @@ public final class Searcher {
     /// ("screenshot", "video") and stopwords are dropped: they describe what to look for, not what's in it. Words of
     /// two letters or more count; a Bengali letter with its vowel sign ("মা") is two.
     public static func terms(_ text: String) -> [String] {
-        let ask = ranked(text).positive
+        let ask = parse(text).positiveText
         var seen = Set<String>()
         return SearchText.normalized(ask).lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
@@ -462,7 +638,7 @@ public final class Searcher {
     /// Kinds the query asks for ("…in a video", "screenshot of…", "ভিডিওতে"): a soft boost, not a filter. Bengali
     /// attaches case endings, so a Bengali kind word also counts at the start of a longer word.
     static func kindHints(_ text: String) -> Set<FileKind> {
-        let ask = ranked(text).positive
+        let ask = parse(text).positiveText
         return Set(SearchText.normalized(ask).lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
             .compactMap { word in
                 kindWords[word] ?? kindWords.first { key, _ in
@@ -480,7 +656,7 @@ public final class Searcher {
     ]
 
     static func wantsNicePhotos(_ text: String) -> Bool {
-        let ask = ranked(text).positive
+        let ask = parse(text).positiveText
         let words = Set(SearchText.normalized(ask).lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty })
         return !words.isDisjoint(with: niceWords)

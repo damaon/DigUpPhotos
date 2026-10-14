@@ -29,6 +29,8 @@ nonisolated struct AppSettings: Sendable {
     var indexOnBattery: Bool
     /// The query encoder (~0.25 GB) exits after this long without a query; the next panel open starts it again.
     var encoderIdleSeconds: Double
+    /// On (the default), a saved OpenRouter key rewrites a question into `and` / `or` / `-` before the search.
+    var queryUnderstanding: Bool
     /// Onboarding was finished (or closed after choosing folders); it doesn't open by itself again.
     var onboarded: Bool
 
@@ -64,6 +66,8 @@ nonisolated struct AppSettings: Sendable {
             indexOnBattery: defaults.object(forKey: "indexOnBattery") == nil || defaults.bool(forKey: "indexOnBattery"),
             encoderIdleSeconds: defaults.object(forKey: "encoderIdleSeconds") == nil
                 ? 600 : max(1, defaults.double(forKey: "encoderIdleSeconds")),
+            queryUnderstanding: defaults.object(forKey: "queryUnderstanding") == nil
+                || defaults.bool(forKey: "queryUnderstanding"),
             onboarded: defaults.bool(forKey: "onboarded"))
     }
 
@@ -103,6 +107,10 @@ nonisolated struct AppSettings: Sendable {
 
     static func save(indexOnBattery: Bool) {
         defaults.set(indexOnBattery, forKey: "indexOnBattery")
+    }
+
+    static func save(queryUnderstanding: Bool) {
+        defaults.set(queryUnderstanding, forKey: "queryUnderstanding")
     }
 
     static func saveOnboarded() {

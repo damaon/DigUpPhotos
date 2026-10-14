@@ -44,6 +44,37 @@ final class AppController {
         self.power = power
         self.engine = engine
         updates = Updates(model: model)
+        let key = OpenRouterKey.load()
+        engine.setOpenRouterKey(key)
+        model.hasOpenRouterKey = OpenRouterKey.usable(key)
+    }
+
+    /// Saves the OpenRouter key in the Keychain and uses it on the next search. Empty turns rewriting off.
+    func setOpenRouterKey(_ key: String) {
+        OpenRouterKey.save(key)
+        engine.setOpenRouterKey(key)
+        model.hasOpenRouterKey = OpenRouterKey.usable(key)
+    }
+
+    /// The Settings switch and the sparkle in the search field. Off searches the words as typed.
+    func setQueryUnderstanding(_ on: Bool) {
+        guard model.settings.queryUnderstanding != on else { return }
+        AppSettings.save(queryUnderstanding: on)
+        model.settings.queryUnderstanding = on
+        engine.setQueryUnderstanding(on)
+        panel?.research()
+        searchWindow?.search.research()
+    }
+
+    /// Yellow sparkle means a question is rewritten. A click turns that off, or back on. With no key, turning it on
+    /// opens Settings.
+    func toggleQueryUnderstanding() {
+        if model.settings.queryUnderstanding, model.hasOpenRouterKey {
+            setQueryUnderstanding(false)
+        } else {
+            setQueryUnderstanding(true)
+            if !model.hasOpenRouterKey { showSettings() }
+        }
     }
 
     /// `showWindow`: opened by hand (not at login), so the search window comes up once the app is set up.

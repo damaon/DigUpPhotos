@@ -45,16 +45,48 @@ import Testing
         #expect(Searcher.wantsNicePhotos("najładniejsze zdjęcia z żoną"))
         #expect(!Searcher.wantsNicePhotos("dog on the beach"))
         #expect(Searcher.terms("best photos of dinner") == ["dinner"])
-        #expect(Searcher.ranked("best photos without rice")
-                == Searcher.RankedQuery(positive: "best photos", excluded: ["rice"]))
-        #expect(Searcher.embedPhrases("best photos without rice") == ["best photos", "rice"])
-        #expect(Searcher.terms("best photos without rice").isEmpty)
-        #expect(Searcher.wantsNicePhotos("best photos without rice"))
-        #expect(Searcher.ranked("beach without rain or crowds").excluded == ["rain", "crowds"])
-        #expect(Searcher.ranked("dinner").excluded.isEmpty)
-        #expect(Searcher.ranked("dinner").positive == "dinner")
-        #expect(Searcher.ftsQuery("best photos without rice") == nil)
-        #expect(Searcher.terms("photos of anna without rice") == ["anna"])
+        #expect(Searcher.parse("best photos - rice").expression
+                == .and([.phrase("best photos"), .not(.phrase("rice"))]))
+        #expect(Searcher.embedPhrases("best photos - rice") == ["best photos", "rice"])
+        #expect(Searcher.terms("best photos - rice").isEmpty)
+        #expect(Searcher.wantsNicePhotos("best photos - rice"))
+        #expect(Searcher.kindHints("person - screenshot").isEmpty)
+        #expect(Searcher.parse("person - screenshot").expression
+                == .and([.phrase("person"), .not(.phrase("screenshot"))]))
+        #expect(Searcher.parse("person -screenshot").expression
+                == .and([.phrase("person"), .not(.phrase("screenshot"))]))
+        #expect(Searcher.parse("person and screenshot").expression
+                == .and([.phrase("person"), .phrase("screenshot")]))
+        #expect(Searcher.parse("person or screenshot").expression
+                == .or([.phrase("person"), .phrase("screenshot")]))
+        #expect(Searcher.parse("(person or cat) - screenshot").expression
+                == .and([.or([.phrase("person"), .phrase("cat")]), .not(.phrase("screenshot"))]))
+        #expect(Searcher.parse("person or cat - screenshot").expression
+                == .or([.phrase("person"), .and([.phrase("cat"), .not(.phrase("screenshot"))])]))
+        #expect(!Searcher.parse("dinner").hasOperators)
+        #expect(Searcher.parse("dinner").positiveText == "dinner")
+        #expect(Searcher.embedPhrases("dinner") == ["dinner"])
+        #expect(!Searcher.parse("well-known beach").hasOperators)
+        #expect(Searcher.embedPhrases("well-known beach") == ["well-known beach"])
+        #expect(Searcher.ftsQuery("best photos - rice") == nil)
+        #expect(Searcher.terms("photos of anna - rice") == ["anna"])
+        let person: [Int64: (z: Double, cosine: Double, row: Int)] = [
+            1: (3, 0.5, 0), 2: (1, 0.1, 1), 3: (2.4, 0.4, 2),
+        ]
+        let screenshot: [Int64: (z: Double, cosine: Double, row: Int)] = [
+            1: (1, 0.1, 3), 2: (3, 0.6, 4), 3: (2.2, 0.4, 5),
+        ]
+        let minus = Searcher.parse("person - screenshot").expression
+        #expect(Searcher.evaluate(minus, file: 1, clauses: [person, screenshot], gate: 2) != nil)
+        #expect(Searcher.evaluate(minus, file: 2, clauses: [person, screenshot], gate: 2) == nil)
+        #expect(Searcher.evaluate(minus, file: 3, clauses: [person, screenshot], gate: 2) == nil)
+        let either = Searcher.parse("person or screenshot").expression
+        #expect(Searcher.evaluate(either, file: 1, clauses: [person, screenshot], gate: 2) != nil)
+        #expect(Searcher.evaluate(either, file: 2, clauses: [person, screenshot], gate: 2) != nil)
+        let both = Searcher.parse("person and screenshot").expression
+        #expect(Searcher.evaluate(both, file: 1, clauses: [person, screenshot], gate: 2) == nil)
+        let bothHit = Searcher.evaluate(both, file: 3, clauses: [person, screenshot], gate: 2)
+        #expect(bothHit?.z == 2.2)
     }
 
     @Test func fingerprintMentionsQualityVersion() {

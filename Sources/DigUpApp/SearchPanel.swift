@@ -36,6 +36,12 @@ final class SearchPanelController {
     private(set) var selection: String?
     private(set) var phase = SearchPhase.empty
     private(set) var note: String?
+    /// Luna's formal line for the current question, when it differs from what's typed.
+    private(set) var interpreted: String?
+    /// Why that line was not searched, or why OpenRouter refused.
+    private(set) var rewriteNote: String?
+    /// A rewrite is in flight.
+    private(set) var interpreting = false
     var encoder: EngineStatus.Encoder { model.status.encoder }
 
     @ObservationIgnored let model: AppModel
@@ -128,6 +134,21 @@ final class SearchPanelController {
 
     // MARK: Searching
 
+    func applyInterpretation() {
+        guard let interpreted, interpreted != query else { return }
+        query = interpreted
+    }
+
+    func showSettings() { app.showSettings() }
+
+    /// Runs the current query again. The sparkle and the Settings switch call this after query understanding changes.
+    func research() {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        queryChanged()
+    }
+
+    func toggleQueryUnderstanding() { app.toggleQueryUnderstanding() }
+
     private func queryChanged() {
         generation += 1
         let current = generation
@@ -139,9 +160,16 @@ final class SearchPanelController {
             results = .empty
             selection = nil
             phase = .empty
+            interpreted = nil
+            rewriteNote = nil
+            interpreting = false
             resizeWindow()
             return
         }
+        interpreted = nil
+        rewriteNote = nil
+        interpreting = engine.rewritesQueries
+        engine.noteTyped(text)
         // Words now. The last word is probably half-typed, so it matches as a prefix.
         Task {
             let started = Date()
@@ -151,20 +179,34 @@ final class SearchPanelController {
             log("search \"\(text)\": words \(hits.count) hits in \(ms(since: started))")
         }
         // Meaning results show once typing pauses, but they're computed now (embedding, then search), so they're
-        // ready by then: the pause is the whole wait.
-        engine.embedAhead(text)
+        // ready by then: the pause is the whole wait. With an OpenRouter key, the question is rewritten first, so
+        // the words typed so far are not embedded ahead.
+        if !engine.rewritesQueries { engine.embedAhead(text) }
         let showAt = ContinuousClock.now + Self.typingPause   // counted from the keystroke, not from when the task runs
+        let rewrite = engine.rewritesQueries
         meaningTask = Task {
+            if rewrite {
+                try? await Task.sleep(until: showAt, tolerance: .milliseconds(1), clock: .continuous)
+                guard !Task.isCancelled, current == generation else { return }
+            }
+            let reading = await engine.formalQuery(text)
+            guard !Task.isCancelled, current == generation else { return }
+            interpreting = false
+            interpreted = reading.interpreted
+            rewriteNote = reading.note
+            let asked = reading.search
             let embedStarted = Date()
-            let vector = await engine.embedQuery(text)
+            let vector = await engine.embedQuery(asked, typed: text)
             guard !Task.isCancelled, current == generation else { return }
             let searchStarted = Date()
-            let hits = await engine.search(text, vector: vector, prefixLast: false)
+            let hits = await engine.search(asked, vector: vector, prefixLast: false)
             let searched = Date()
-            try? await Task.sleep(until: showAt, tolerance: .milliseconds(1), clock: .continuous)
+            if !rewrite {
+                try? await Task.sleep(until: showAt, tolerance: .milliseconds(1), clock: .continuous)
+            }
             guard !Task.isCancelled, current == generation else { return }
             finalGeneration = current
-            show(hits, query: text, phase: vector == nil ? .wordsOnly : .meaning)
+            show(hits, query: asked, phase: vector == nil ? .wordsOnly : .meaning)
             let shown = Date(), keystroke = typedAt
             log("search \"\(text)\": \(vector == nil ? "words only" : "meaning") \(hits.count) hits "
                 + "(\(results.strongRows.count) strong) · embed \(ms(since: embedStarted, until: searchStarted)) · "

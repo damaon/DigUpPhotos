@@ -330,15 +330,14 @@ func search(_ args: Arguments) throws {
     let store = try IndexStore(directory: args.indexFolder)
     let searcher = try Searcher(store: store)
     let started = Date()
-    let ranked = Searcher.ranked(query)
+    let parsed = Searcher.parse(query)
     let phrases = Searcher.embedPhrases(query)
     let vectors = try queryVectors(phrases, store: store, searcher: searcher)
     let encoded = Date()
-    let main = ranked.positive.isEmpty ? nil : vectors?.first
-    let negatives = ranked.positive.isEmpty ? (vectors ?? []) : Array((vectors ?? []).dropFirst())
-    let hits = try searcher.search(query, queryVector: main, kinds: try args.kinds(), people: try args.people(),
+    let hits = try searcher.search(query, queryVector: vectors?.first, kinds: try args.kinds(), people: try args.people(),
                                    limit: args.values["-n"].flatMap(Int.init) ?? 10, zGate: args.zGate,
-                                   wordWeight: args.wordWeight, negativeVectors: negatives)
+                                   wordWeight: args.wordWeight,
+                                   clauseVectors: parsed.hasOperators ? (vectors ?? []) : [])
     let searched = Date()
     if args.flags.contains("--json") {
         let rows: [[String: Any]] = hits.map { hit in

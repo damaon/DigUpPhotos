@@ -2,6 +2,70 @@ import AppKit
 import DigUpKit
 import SwiftUI
 
+/// The sparkle in the search field. Yellow while a question is rewritten; a click turns that on or off.
+struct QueryUnderstandingToggle: View {
+    var active: Bool
+    var pointSize: CGFloat = 15
+    var toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            Image(systemName: "sparkles")
+                .font(.system(size: pointSize, weight: .semibold))
+                .foregroundStyle(active ? AnyShapeStyle(Color.yellow) : AnyShapeStyle(.tertiary))
+        }
+        .buttonStyle(.plain)
+        .help(active ? "Query understanding is on" : "Turn on query understanding")
+        .accessibilityLabel("Query understanding")
+        .accessibilityValue(active ? "On" : "Off")
+    }
+}
+
+/// The line under the search field: "Interpreted as (cat or tree) - screenshot". A click puts that text in the field.
+struct QueryInterpretation: View {
+    var interpreting: Bool
+    var line: String?
+    var note: String?
+    var apply: () -> Void
+    var openSettings: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if interpreting {
+                Text("Interpreting…")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else if let line {
+                Button(action: apply) {
+                    (Text("Interpreted as ").foregroundStyle(.secondary) + Text(line).foregroundStyle(.primary))
+                        .font(.system(size: 12))
+                        .multilineTextAlignment(.leading)
+                }
+                .buttonStyle(.plain)
+                .help("Put this in the search field")
+            }
+            if let note {
+                if note.hasPrefix("Not used") {
+                    Text(note)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                } else {
+                    Button(action: openSettings) {
+                        Text(note)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                            .multilineTextAlignment(.leading)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open Settings to check the key")
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 struct SearchPanelView: View {
     @Bindable var controller: SearchPanelController
 
@@ -24,7 +88,8 @@ struct SearchPanelView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 11) {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 11) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(Brand.gradient)
@@ -33,6 +98,8 @@ struct SearchPanelView: View {
                         placeholder: "Describe it: “payment error screenshot”, “zebra in a video”…") {
                 controller.field = $0
             }
+            QueryUnderstandingToggle(active: controller.model.settings.queryUnderstanding && controller.model.hasOpenRouterKey,
+                                     pointSize: 18, toggle: { controller.toggleQueryUnderstanding() })
             if controller.phase == .words, controller.encoder == .starting {
                 ProgressView().controlSize(.small)
             }
@@ -48,6 +115,14 @@ struct SearchPanelView: View {
         }
         .padding(.horizontal, 18)
         .frame(height: SearchPanelController.fieldHeight)
+        if controller.interpreting || controller.interpreted != nil || controller.rewriteNote != nil {
+            QueryInterpretation(interpreting: controller.interpreting, line: controller.interpreted,
+                                note: controller.rewriteNote, apply: { controller.applyInterpretation() },
+                                openSettings: { controller.showSettings() })
+                .padding(.horizontal, 18)
+                .padding(.bottom, 8)
+        }
+        }
     }
 
     @ViewBuilder private var content: some View {

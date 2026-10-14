@@ -183,6 +183,10 @@ private struct SettingsPane: View {
 
 private struct GeneralSettings: View {
     @Bindable var state: SettingsState
+    @State private var openRouterKey = OpenRouterKey.load()
+    @State private var keyNote = ""
+    @State private var keyOK = false
+    @State private var keyCheck: Task<Void, Never>?
 
     var body: some View {
         Form {
@@ -213,6 +217,39 @@ private struct GeneralSettings: View {
                 }
             }
             Section {
+                Toggle(isOn: Binding(get: { state.model.settings.queryUnderstanding }, set: { on in
+                    state.app.setQueryUnderstanding(on)
+                })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Query understanding")
+                        Text("Rewrite a question into and, or, and − before searching.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent("API key") {
+                    SecureField("sk-or-…", text: $openRouterKey)
+                        .onSubmit { commitKey() }
+                        .onChange(of: openRouterKey) { _, _ in commitKey() }
+                }
+            } header: {
+                Text("OpenRouter")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !keyNote.isEmpty {
+                        Text(keyNote)
+                            .foregroundStyle(keyOK ? AnyShapeStyle(.green) : keyNote.hasPrefix("Off") || keyNote == "Checking the key…"
+                                             ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
+                    }
+                    Text("The question is sent to OpenRouter; your photos are not. The key stays in the Keychain. "
+                         + "Turn query understanding off to search the words as you type them.")
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .onAppear { commitKey() }
+            Section {
                 Toggle(isOn: Binding(get: { state.checksForUpdates }, set: { on in
                     state.app.updates.automaticallyChecks = on
                     state.checksForUpdates = on
@@ -236,6 +273,36 @@ private struct GeneralSettings: View {
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
+    }
+
+    private func commitKey() {
+        let cleaned = OpenRouterKey.normalize(openRouterKey)
+        if cleaned != openRouterKey {
+            openRouterKey = cleaned
+            return
+        }
+        state.app.setOpenRouterKey(cleaned)
+        keyCheck?.cancel()
+        if cleaned.isEmpty {
+            keyOK = false
+            keyNote = "Off. Questions are searched as you type them."
+            return
+        }
+        if let problem = OpenRouterKey.formatProblem(cleaned) {
+            keyOK = false
+            keyNote = problem
+            return
+        }
+        keyOK = false
+        keyNote = "Checking the key…"
+        keyCheck = Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            let result = await OpenRouterKey.verify(cleaned)
+            guard !Task.isCancelled else { return }
+            keyOK = result.ok
+            keyNote = result.message
+        }
     }
 }
 

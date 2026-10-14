@@ -60,8 +60,8 @@ nonisolated final class Engine: @unchecked Sendable {
     struct QueryVector: Sendable {
         let values: [Float]
         let source: String
-        /// Vectors for the "without …" part. Search subtracts them from the main score.
-        var negatives: [[Float]] = []
+        /// One vector per phrase when the query uses `and`, `or`, or `-`. Empty for a plain query, which stays one embedding.
+        var clauses: [[Float]] = []
     }
 
     let indexDirectory: URL
@@ -111,8 +111,13 @@ nonisolated final class Engine: @unchecked Sendable {
     private var encoderIdleExit: DispatchWorkItem?
     private var vectorCache = QueryVectorCache(limit: 256)
 
-    // Any thread, under `lock`: the newest text typed, so embed-ahead requests that went stale are skipped.
+    // Any thread, under `lock`: the newest text typed, so an embed for an older keystroke is skipped.
     private var newestTyped: String?
+    /// OpenRouter key. Rewriting also needs `queryUnderstanding`.
+    private var openRouterAPIKey = ""
+    /// The Settings switch. Off searches the words as typed, even when a key is saved.
+    private var queryUnderstanding: Bool
+    private var rewriteCache: [String: QueryReading] = [:]
 
     // Any thread, under `lock`
     private let lock = NSLock()
@@ -130,6 +135,7 @@ nonisolated final class Engine: @unchecked Sendable {
         excluded = settings.excludedFolders
         excludedTypes = settings.excludedTypes
         photosAndVideoOnly = settings.photosAndVideoOnly
+        queryUnderstanding = settings.queryUnderstanding
         pruneWanted = !settings.roots.isEmpty
         self.backfillBlocker = backfillBlocker
         self.onStatus = onStatus
@@ -543,21 +549,19 @@ nonisolated final class Engine: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
                 var values = vector?.values
-                var negatives = vector?.negatives ?? []
+                var clauses = vector?.clauses ?? []
                 if let vector, let indexed = searcher?.vectorSource, indexed != vector.source {
                     if !warnedAboutSource {
                         log("meaning search is off: the index was built with \(indexed), the encoder is \(vector.source)")
                         warnedAboutSource = true
                     }
                     values = nil
-                    negatives = []
+                    clauses = []
                 }
-                let ranked = Searcher.ranked(text)
-                if !ranked.excluded.isEmpty {
-                    log("search: “\(ranked.positive)” minus \(ranked.excluded.joined(separator: ", "))")
-                }
+                let parsed = Searcher.parse(text)
+                if parsed.hasOperators { log("search: \(parsed.expression.summary)") }
                 let hits = try? searcher?.search(text, queryVector: values, kinds: kinds, people: people, limit: limit,
-                                                 prefixLast: prefixLast, negativeVectors: negatives)
+                                                 prefixLast: prefixLast, clauseVectors: clauses)
                 // Only files that are searched (`FolderSelection`'s rule, as the crawler walks them) and of types not
                 // skipped: a removed folder's rows (or a newly skipped type's) can outlive it until a helper syncs
                 // (indexing was paused, or the app quit first).
@@ -708,23 +712,81 @@ nonisolated final class Engine: @unchecked Sendable {
         }
     }
 
+    /// True when query understanding is on and a saved key is complete enough to send.
+    var rewritesQueries: Bool { lock.withLock { queryUnderstanding && OpenRouterKey.usable(openRouterAPIKey) } }
+
+    func setQueryUnderstanding(_ on: Bool) {
+        lock.withLock { queryUnderstanding = on }
+    }
+
+    func setOpenRouterKey(_ key: String) {
+        let trimmed = OpenRouterKey.normalize(key)
+        lock.withLock {
+            guard trimmed != openRouterAPIKey else { return }
+            openRouterAPIKey = trimmed
+            rewriteCache.removeAll()
+        }
+    }
+
+    /// The question Luna rewrote. `search` is what to embed. `interpreted` is the line under the field.
+    func formalQuery(_ text: String) async -> QueryReading {
+        let key = lock.withLock { openRouterAPIKey }
+        guard OpenRouterKey.usable(key) else { return .asTyped(text) }
+        if let cached = lock.withLock({ rewriteCache[text] }) { return cached }
+        let reply: QueryRewrite.Reply?
+        do {
+            reply = try await QueryRewrite.line(text, apiKey: key)
+        } catch let error as URLError where error.code == .cancelled {
+            return .asTyped(text)
+        } catch is CancellationError {
+            return .asTyped(text)
+        } catch {
+            log("openrouter: \(error)")
+            let reading = QueryReading(search: text, interpreted: nil, note: QueryReading.note(for: error))
+            lock.withLock { rewriteCache[text] = reading }
+            return reading
+        }
+        guard !Task.isCancelled else { return .asTyped(text) }
+        guard let reply else {
+            log("openrouter: no reading for “\(text)”")
+            return .asTyped(text)
+        }
+        let same = reply.line == text
+        let reading = QueryReading(
+            search: reply.trusted ? reply.line : text,
+            interpreted: same ? nil : reply.line,
+            note: reply.trusted ? nil : "Not used — it added words that weren't in the question. Click it to search anyway.")
+        lock.withLock { rewriteCache[text] = reading }
+        if reply.trusted, !same { log("query: “\(text)” → \(reply.line)") }
+        if !reply.trusted { log("openrouter: ignored “\(reply.line)”") }
+        return reading
+    }
+
+    /// The field's current text. An embed for an older keystroke is skipped, including when Luna rewrote that keystroke
+    /// into a different line (`embedQuery`).
+    func noteTyped(_ text: String) {
+        lock.withLock { newestTyped = text }
+    }
+
     /// Embeds what's typed so far, right away, and caches it. The panel calls this on every keystroke: the GPU stays
     /// awake (after even 150 ms idle a query takes ~19 ms instead of ~6), and when typing pauses the vector is
     /// usually ready. Skipped when newer text arrives before its turn.
     func embedAhead(_ text: String) {
-        lock.withLock { newestTyped = text }
+        noteTyped(text)
         encoderQueue.async { [self] in
             guard lock.withLock({ newestTyped }) == text else { return }
             _ = vector(for: text)
         }
     }
 
-    /// The query's vector, or nil when the encoder can't run (keyword results still work). Also nil, at once, for
-    /// text that's no longer the newest typed: its results would be thrown away.
-    func embedQuery(_ text: String) async -> QueryVector? {
+    /// The query's vector, or nil when the encoder can't run (keyword results still work). Also nil, at once, when
+    /// `typed` is no longer what's in the field: its results would be thrown away. `text` may be Luna's line, which
+    /// is not what was typed.
+    func embedQuery(_ text: String, typed: String) async -> QueryVector? {
         return await withCheckedContinuation { continuation in
             encoderQueue.async { [self] in
-                if vectorCache[text] == nil, let newest = lock.withLock({ newestTyped }), newest != text {
+                let newest = lock.withLock { newestTyped }
+                if vectorCache[text] == nil, let newest, newest != typed {
                     return continuation.resume(returning: nil)
                 }
                 continuation.resume(returning: vector(for: text))
@@ -740,10 +802,9 @@ nonisolated final class Engine: @unchecked Sendable {
             let phrases = Searcher.embedPhrases(text)
             guard !phrases.isEmpty else { return nil }
             let embedded = try worker.embedTexts(phrases.map(Prompts.query))
-            let ranked = Searcher.ranked(text)
-            let values = ranked.positive.isEmpty ? [] : (embedded.first ?? [])
-            let negatives = ranked.positive.isEmpty ? embedded : Array(embedded.dropFirst())
-            let vector = QueryVector(values: values, source: worker.info.vectorSource, negatives: negatives)
+            let parsed = Searcher.parse(text)
+            let vector = QueryVector(values: embedded.first ?? [], source: worker.info.vectorSource,
+                                     clauses: parsed.hasOperators ? embedded : [])
             vectorCache[text] = vector
             return vector
         } catch {
