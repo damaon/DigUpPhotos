@@ -150,6 +150,13 @@ struct PreviewPane: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if let breakdown = row.lookBreakdown {
+                    Text(breakdown)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help("How the photo was scored: sharpness, light, contrast, and how a face sits in the frame. Composition is not scored when no face was found.")
+                }
             }
             .padding(.top, 12)
             WhyItMatched(row: row)

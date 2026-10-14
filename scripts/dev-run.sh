@@ -23,9 +23,9 @@ if [[ "$MODELS" == "$PWD/.dev/models" ]]; then
 fi
 
 # Only an earlier run of this same copy is stopped: an installed DigUp in use keeps running.
-APP="${APP:-build.noindex/DigUp.app}"
-EXE="$(cd "$APP" && pwd -P)/Contents/MacOS/DigUp"
-for pid in $(pgrep -x DigUp); do
+APP="${APP:-build.noindex/DigUpPhotos.app}"
+EXE="$(cd "$APP" && pwd -P)/Contents/MacOS/DigUpPhotos"
+for pid in $(pgrep -x DigUpPhotos); do
   [[ "$(ps -o comm= -p "$pid")" == "$EXE" ]] && kill "$pid" && sleep 0.5
 done
 ARGS=(-indexDir "$INDEX" -modelsDir "$MODELS" -defaultsSuite "$SUITE")

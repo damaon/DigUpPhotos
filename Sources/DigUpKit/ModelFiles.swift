@@ -34,7 +34,7 @@ public enum ModelFiles {
 
     /// Where the app keeps them.
     public static let installed = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/DigUp/Models")
+        .appendingPathComponent("Library/Application Support/DigUpPhotos/Models")
 
     /// The pinned revision's folder in the Hugging Face cache (`hf download` puts the files there): `$HF_HUB_CACHE`,
     /// `$HF_HOME/hub`, or `~/.cache/huggingface/hub`.
@@ -48,9 +48,17 @@ public enum ModelFiles {
 
     /// `file` in the Hugging Face cache, when it's there at the right size (its checksum is for the caller to check).
     public static func cachedCopy(of file: File) -> URL? {
-        let url = huggingFaceSnapshot.appendingPathComponent(file.name).resolvingSymlinksInPath()
-        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
-        return size == file.bytes ? url : nil
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates = [
+            huggingFaceSnapshot.appendingPathComponent(file.name),
+            home.appendingPathComponent("Library/Application Support/DigUp/Models/\(file.name)"),
+        ]
+        for candidate in candidates {
+            let url = candidate.resolvingSymlinksInPath()
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
+            if size == file.bytes { return url }
+        }
+        return nil
     }
 
     /// The files that aren't in `folder` yet. Only verified files get their final name, so being there is enough.

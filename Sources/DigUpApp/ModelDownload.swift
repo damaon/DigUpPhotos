@@ -122,8 +122,8 @@ final class ModelDownload {
                 let copied = (try? FileManager.default.copyItem(at: cached, to: partial)) != nil
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    log("model: \(file.name) " + (copied ? "copied from the Hugging Face cache"
-                                                          : "is in the Hugging Face cache but couldn't be copied"))
+                    log("model: \(file.name) " + (copied ? "copied from an existing copy"
+                                                          : "was found locally but couldn't be copied"))
                     if copied {
                         fileStarted = Date()
                         finished(file, .downloaded(partial))

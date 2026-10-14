@@ -55,8 +55,11 @@ enum ImageExtractor {
         ]
         guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else { throw ExtractError.unreadable("can't decode image") }
-        let quality = scoreQuality ? PhotoQuality.assess(thumbnail) : nil
         let faces = detectFaces ? ((try? FaceDetector.detect(in: thumbnail, to: folder)) ?? []) : []
+        // One detection: quality scoring uses those boxes instead of asking Vision again.
+        let quality = scoreQuality
+            ? PhotoQuality.assess(thumbnail, detectFaces: false, faceBoxes: faces.map(\.box))
+            : nil
         let out = folder.appendingPathComponent(UUID().uuidString + (png ? ".png" : ".jpg"))
         try write(thumbnail, to: out, png: png)
         let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]

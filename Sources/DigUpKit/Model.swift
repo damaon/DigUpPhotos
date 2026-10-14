@@ -72,15 +72,55 @@ public struct IndexOptions: Sendable {
         }.filter { !$0.isEmpty })
     }
 
+    /// Settings that change vectors (budgets and windows). Quality and faces are not in here: those can be redone
+    /// while the embedding cache, keyed by file contents, still applies.
+    var vectorFingerprint: String {
+        "photo\(photoBudget) shot\(screenshotBudget) page\(pageBudget) frame\(frameBudget)/\(frameInterval)s audio\(audioWindow)/\(audioHop)s"
+    }
+
     var fingerprint: String {
-        // Same string as before when `kinds` is empty (CLI / evals), so a full index isn't rebuilt for nothing —
-        // except `qN` when photo quality scoring is on (photos are read again to fill `info.quality`).
-        // `qN`: photo quality; `fN`: face crops for people. Bumping either re-reads photos.
-        var stamp = "photo\(photoBudget) shot\(screenshotBudget) page\(pageBudget) frame\(frameBudget)/\(frameInterval)s audio\(audioWindow)/\(audioHop)s q\(PhotoQuality.version) f1"
+        // Same string as before when `kinds` is empty (CLI / evals), so a full index isn't rebuilt for nothing.
+        // `qN`: photo quality; `fN`: face crops. Bumping either re-reads photos. Their embeddings stay in the cache.
+        var stamp = "\(vectorFingerprint) q\(PhotoQuality.version) f\(FaceDetector.version)"
         if !kinds.isEmpty {
             stamp = "kinds:" + kinds.map(\.rawValue).sorted().joined(separator: ",") + " " + stamp
         }
         return stamp
+    }
+}
+
+/// The model and the vector settings an index was built with. Quality (`qN`) and faces (`fN`) are separate: they
+/// re-read photos, and the embeddings already stored for those file contents are reused.
+struct IndexStamp: Equatable, Sendable {
+    var model: String
+    var vectors: String
+    var quality: Int?
+    var faces: Int?
+
+    static func parse(_ fingerprint: String) -> IndexStamp {
+        let parts = fingerprint.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+        let model = parts.count == 2 ? parts[0].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        var tokens = (parts.count == 2 ? parts[1] : Substring(fingerprint))
+            .split(whereSeparator: \.isWhitespace).map(String.init)
+        if tokens.first?.hasPrefix("kinds:") == true { tokens.removeFirst() }
+        var quality: Int?
+        var faces: Int?
+        while let last = tokens.last {
+            if let number = Self.mark(last, prefix: "q") { quality = number; tokens.removeLast(); continue }
+            if let number = Self.mark(last, prefix: "f") { faces = number; tokens.removeLast(); continue }
+            break
+        }
+        return IndexStamp(model: model, vectors: tokens.joined(separator: " "), quality: quality, faces: faces)
+    }
+
+    /// Same embedding model and the same budgets. A quality or face bump does not make old vectors unusable.
+    func sameEmbeddings(as other: IndexStamp) -> Bool {
+        model == other.model && vectors == other.vectors
+    }
+
+    private static func mark(_ token: String, prefix: Character) -> Int? {
+        guard token.first == prefix, token.count > 1, token.dropFirst().allSatisfy(\.isNumber) else { return nil }
+        return Int(token.dropFirst())
     }
 }
 

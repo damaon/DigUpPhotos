@@ -107,14 +107,14 @@ public final class Searcher {
     /// means no people filter.
     public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil,
                        people: Set<Int64>? = nil, limit: Int = 20, zGate: Double = 2.0, wordWeight: Double? = nil,
-                       prefixLast: Bool = false) throws -> [SearchHit] {
+                       prefixLast: Bool = false, negativeVectors: [[Float]] = []) throws -> [SearchHit] {
         let wordWeight = wordWeight ?? Self.wordWeight
         if queryVector != nil, !vectorsLoaded { try reload() }
         let fileKind = self.fileKind
         // AND: a photo must include Person A and Person B when both are selected.
         let peopleFiles = try store.filesContaining(allPeople: people ?? [])
         let allowed = { (file: Int64) -> Bool in
-            guard kinds == nil || fileKind[file].map { kinds!.contains($0) } ?? false else { return false }
+            guard kinds == nil || fileKind[file].map({ kinds!.contains($0) }) ?? false else { return false }
             if let peopleFiles { return peopleFiles.contains(file) }
             return true
         }
@@ -180,6 +180,36 @@ public final class Searcher {
                 score += (wantNice ? 1.4 : 0.35) * (q / 100)
             }
             scored[file] = score
+        }
+        // "without rice": the ask is rank 1, each excluded concept is rank 2, and a file's place is rank 1 minus
+        // how well it matches the exclusion (its meaning, or the word itself when that's stronger).
+        let excluded = Self.ranked(text).excluded
+        if !excluded.isEmpty {
+            var penalty: [Int64: Double] = [:]
+            for vector in negativeVectors where vector.count == Vectors.dimension {
+                let scores = score(vector)
+                let meaning = Self.meaning(scores, rowModality, setsScale: rowSetsScale)
+                for row in 0..<scores.count where allowed(rowFile[row]) {
+                    let z = meaning[row]
+                    guard z > 0 else { continue }
+                    let file = rowFile[row]
+                    if z > (penalty[file] ?? 0) { penalty[file] = z }
+                }
+            }
+            let patterns = Self.patterns(Self.terms(excluded.joined(separator: " ")), prefixLast: prefixLast)
+            if !patterns.isEmpty {
+                try store.db.query("""
+                    SELECT DISTINCT s.file FROM fts JOIN segments s ON s.id = fts.rowid
+                    WHERE fts MATCH ?
+                    """, [.text(patterns.joined(separator: " OR "))]) { row in
+                    let file = row.int(0)
+                    guard allowed(file) else { return }
+                    penalty[file] = max(penalty[file] ?? 0, zGate)
+                }
+            }
+            for (file, down) in penalty where scored[file] != nil {
+                scored[file]! -= down
+            }
         }
 
         let wordRank = Dictionary(words.enumerated().map { ($0.element.file, ($0.offset + 1, $0.element)) },
@@ -325,6 +355,54 @@ public final class Searcher {
         return text
     }
 
+    /// A query split into what to find and what to rank below it.
+    /// "best photos without rice" → find "best photos", then subtract matches of "rice".
+    public struct RankedQuery: Sendable, Equatable {
+        public var positive: String
+        public var excluded: [String]
+
+        public init(positive: String, excluded: [String]) {
+            self.positive = positive
+            self.excluded = excluded
+        }
+    }
+
+    /// Words that start an exclusion: the rest of the query is ranked against the part before them.
+    static let negationWords: Set<String> = ["without", "except", "minus", "not", "bez", "poza", "nie"]
+
+    /// "best photos without rice" → positive "best photos", excluded ["rice"].
+    /// With no exclusion, `positive` is the text as written.
+    public static func ranked(_ text: String) -> RankedQuery {
+        var prepared = SearchText.normalized(text)
+        prepared = prepared.replacingOccurrences(of: "w/o", with: " without ", options: [.caseInsensitive])
+        let words = prepared.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        var positive: [String] = []
+        var excluded: [String] = []
+        var excluding = false
+        for word in words {
+            let lower = word.lowercased()
+            if negationWords.contains(lower) {
+                excluding = true
+                continue
+            }
+            if excluding {
+                if lower == "and" || lower == "or" || lower == "nor" || lower == "i" { continue }
+                excluded.append(lower)
+            } else {
+                positive.append(word)
+            }
+        }
+        guard excluding else { return RankedQuery(positive: text, excluded: []) }
+        return RankedQuery(positive: positive.joined(separator: " "), excluded: excluded)
+    }
+
+    /// Phrases to embed, positive first. Exclusions follow, so their vectors can be subtracted.
+    public static func embedPhrases(_ text: String) -> [String] {
+        let query = ranked(text)
+        guard !query.excluded.isEmpty else { return [text] }
+        return (query.positive.isEmpty ? [] : [query.positive]) + query.excluded
+    }
+
     static let stopwords: Set<String> = [
         "a", "an", "the", "of", "in", "on", "at", "to", "for", "with", "and", "or", "my", "me", "that", "this",
         "these", "those", "from", "about", "where", "what", "which", "who", "when", "is", "was", "are", "were", "be",
@@ -333,7 +411,8 @@ public final class Searcher {
         // Aesthetic asks ("best photos of…"): they steer ranking via `wantsNicePhotos`, not keyword search.
         "best", "nicest", "nice", "beautiful", "pretty", "gorgeous", "stunning", "lovely", "favorite", "favourite",
         "sharpest", "clearest", "aesthetic", "ładne", "ładnych", "ładny", "ładna", "najładniejsze", "najładniejszych",
-        "piękne", "pięknych", "fajne", "najlepsze", "najlepszych",
+        "piękne", "pięknych", "fajne", "najlepsze", "najlepszych", "without", "except", "minus", "not", "bez", "poza",
+        "nie",
         // Bengali and Arabic (normalized, as `terms` sees them)
         "এবং", "ও", "এই", "সেই", "একটি", "আমার", "থেকে", "জন্য", "সাথে", "মধ্যে", "কোথায়", "কোন", "কী", "কি", "যে",
         "ছবি", "স্ক্রিনশট", "ভিডিও", "ফাইল", "পিডিএফ",
@@ -345,8 +424,9 @@ public final class Searcher {
     /// ("screenshot", "video") and stopwords are dropped: they describe what to look for, not what's in it. Words of
     /// two letters or more count; a Bengali letter with its vowel sign ("মা") is two.
     public static func terms(_ text: String) -> [String] {
+        let ask = ranked(text).positive
         var seen = Set<String>()
-        return SearchText.normalized(text).lowercased()
+        return SearchText.normalized(ask).lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { $0.unicodeScalars.count >= 2 && !stopwords.contains($0) && seen.insert($0).inserted }
     }
@@ -382,7 +462,8 @@ public final class Searcher {
     /// Kinds the query asks for ("…in a video", "screenshot of…", "ভিডিওতে"): a soft boost, not a filter. Bengali
     /// attaches case endings, so a Bengali kind word also counts at the start of a longer word.
     static func kindHints(_ text: String) -> Set<FileKind> {
-        Set(SearchText.normalized(text).lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+        let ask = ranked(text).positive
+        return Set(SearchText.normalized(ask).lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
             .compactMap { word in
                 kindWords[word] ?? kindWords.first { key, _ in
                     SearchText.inflects(key) && key.unicodeScalars.count >= 3 && word.hasPrefix(key)
@@ -399,7 +480,8 @@ public final class Searcher {
     ]
 
     static func wantsNicePhotos(_ text: String) -> Bool {
-        let words = Set(SearchText.normalized(text).lowercased()
+        let ask = ranked(text).positive
+        let words = Set(SearchText.normalized(ask).lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty })
         return !words.isDisjoint(with: niceWords)
     }

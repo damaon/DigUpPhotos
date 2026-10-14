@@ -22,7 +22,7 @@ let usage = """
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
 
     Options:
-      --index DIR          index folder (default: ~/Library/Application Support/DigUp/index.noindex)
+      --index DIR          index folder (default: ~/Library/Application Support/DigUpPhotos/index.noindex)
       --kind K,K           screenshot, image, pdf, doc, audio, video
       --person ID          only photos that include this person (repeatable: AND — all must be on the same photo)
       --include-datasets   don't skip folders that look like datasets
@@ -35,7 +35,7 @@ let usage = """
       --shot-tokens N      vision tokens per screenshot (default 280; 560 was 2× slower, no better on real shots)
 
     The model: EmbeddingGemma 2 on llama.cpp, from $DIGUP_MODELS (only there, when set), else
-    ~/Library/Application Support/DigUp/Models or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
+    ~/Library/Application Support/DigUpPhotos/Models or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
     mlx-vlm reference worker instead (evals).
     """
 
@@ -76,7 +76,7 @@ struct Arguments {
     }
 
     var indexFolder: URL {
-        URL(fileURLWithPath: ((values["--index"] ?? "~/Library/Application Support/DigUp/index.noindex")
+        URL(fileURLWithPath: ((values["--index"] ?? "~/Library/Application Support/DigUpPhotos/index.noindex")
             as NSString).expandingTildeInPath).standardizedFileURL
     }
 
@@ -330,11 +330,15 @@ func search(_ args: Arguments) throws {
     let store = try IndexStore(directory: args.indexFolder)
     let searcher = try Searcher(store: store)
     let started = Date()
-    let vector = try queryVectors([query], store: store, searcher: searcher)?.first
+    let ranked = Searcher.ranked(query)
+    let phrases = Searcher.embedPhrases(query)
+    let vectors = try queryVectors(phrases, store: store, searcher: searcher)
     let encoded = Date()
-    let hits = try searcher.search(query, queryVector: vector, kinds: try args.kinds(), people: try args.people(),
+    let main = ranked.positive.isEmpty ? nil : vectors?.first
+    let negatives = ranked.positive.isEmpty ? (vectors ?? []) : Array((vectors ?? []).dropFirst())
+    let hits = try searcher.search(query, queryVector: main, kinds: try args.kinds(), people: try args.people(),
                                    limit: args.values["-n"].flatMap(Int.init) ?? 10, zGate: args.zGate,
-                                   wordWeight: args.wordWeight)
+                                   wordWeight: args.wordWeight, negativeVectors: negatives)
     let searched = Date()
     if args.flags.contains("--json") {
         let rows: [[String: Any]] = hits.map { hit in
@@ -415,8 +419,8 @@ func indexService(_ args: Arguments) throws -> Int32 {
     let indexer = try Indexer(store: store, options: args.options, makeEmbedder: { try model.embedder() })
     // A new app version may bring a new model: the index starts over by itself (keyword search on names goes on).
     indexer.embedderSource = embedderSource()
-    indexer.resetOnModelChange = { indexed, now in
-        emit(["event": "reindex", "from": indexed, "to": now])
+    indexer.resetOnModelChange = { indexed, now, reuseEmbeddings in
+        emit(["event": "reindex", "from": indexed, "to": now, "reuse": reuseEmbeddings])
     }
     let roots = args.positional.map(Arguments.folderURL)
     // A chosen folder that isn't there now (an unplugged drive) is skipped, not an error, and its files stay

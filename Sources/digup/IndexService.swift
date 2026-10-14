@@ -58,7 +58,8 @@ final class IndexService: @unchecked Sendable {
     func serve() -> Int32 {
         removeStaleScratchFolders()
         do {
-            try main.indexer.checkModel()   // a new model: everything is queued again
+            let kept = try main.indexer.checkModel()   // a new model: everything is queued again
+            if kept > 0 { emit(["event": "kept", "vectors": kept]) }
             if let keepOnly = main.keepOnly {
                 let pruned = try main.store.prune(keepingUnder: keepOnly.map(\.path))
                 if pruned > 0 { emit(["event": "pruned", "files": pruned]) }

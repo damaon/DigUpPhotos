@@ -40,9 +40,11 @@ public final class Indexer {
     private var worker: (any Embedder)?
     private let scratch: URL
 
-    /// When set, an index built with another model or other settings is emptied and embedded again (the app: a new
-    /// version may bring a new model), and this hears about it. When nil, indexing stops with `fingerprintMismatch`.
-    public var resetOnModelChange: ((_ indexed: String, _ now: String) -> Void)?
+    /// When set, an index built with another model or other settings is emptied and read again (the app: a new
+    /// version may bring a new model), and this hears about it. `reuseEmbeddings` is true when the model and the
+    /// budgets are the same: vectors already cached for those file bytes are kept, and only the other details
+    /// (quality, faces, dates) are redone. When nil, indexing stops with `fingerprintMismatch`.
+    public var resetOnModelChange: ((_ indexed: String, _ now: String, _ reuseEmbeddings: Bool) -> Void)?
 
     /// The vector source of the embedders `makeEmbedder` makes, when it's known without starting one (llama.cpp's is):
     /// then `checkModel()` can notice a new model before anything needs embedding.
@@ -259,20 +261,107 @@ public final class Indexer {
         return batches
     }
 
-    /// Compares the index with the current model and settings (`embedderSource`), without starting the model; a
-    /// change empties the index (see `resetOnModelChange`) or throws `fingerprintMismatch`. Without a known source the
-    /// check waits for the first file to embed.
-    public func checkModel() throws {
-        guard let embedderSource else { return }
+    /// Compares the index with the current model and settings (`embedderSource`), without starting the model.
+    ///
+    /// A change of model or of the budgets that shape vectors empties the index and the embedding cache. A change of
+    /// anything else (photo quality, faces) queues the files again too, but the cache — file SHA-256 to vector — is
+    /// kept, and those embeddings are not computed again. Returns how many vectors were copied into the cache from
+    /// what's already stored, before any reset. Without a known source the check waits for the first file to embed.
+    @discardableResult
+    public func checkModel() throws -> Int {
+        guard let embedderSource else { return 0 }
+        let kept = try preserveEmbeddings(source: embedderSource)
         try adopt("\(embedderSource) | \(options.fingerprint)")
+        return kept
+    }
+
+    /// Copies vectors that are already in the index into the content cache, under the stamp they were built with.
+    /// Skipped when that stamp isn't the one we'd look up: a new model can't reuse them.
+    private func preserveEmbeddings(source: String) throws -> Int {
+        guard let indexed = try store.meta("fingerprint") else { return 0 }
+        let was = IndexStamp.parse(indexed)
+        let stamp = "\(was.model) | \(was.vectors)"
+        guard stamp == "\(source) | \(options.vectorFingerprint)" else { return 0 }
+        var saved = 0
+        for file in try store.filesNeedingEmbeddingCache(stamp: stamp) {
+            let sha = contentSHA(file)
+            guard !sha.isEmpty else { continue }
+            let budget = file.kind == .screenshot ? options.screenshotBudget : options.photoBudget
+            saved += try store.preserveFileEmbeddings(file, sha: sha, stamp: stamp, imageBudget: budget)
+        }
+        return saved
     }
 
     private func adopt(_ fingerprint: String) throws {
         guard let indexed = try store.meta("fingerprint"), indexed != fingerprint else { return }
         guard let resetOnModelChange else { throw IndexerError.fingerprintMismatch(index: indexed, now: fingerprint) }
-        // Everything is queued again: a run that's under way goes on with its batch, and later runs take the rest.
+        let reuse = IndexStamp.parse(indexed).sameEmbeddings(as: IndexStamp.parse(fingerprint))
+        if !reuse {
+            let stamp = IndexStamp.parse(fingerprint)
+            try store.discardEmbeddingCache(except: "\(stamp.model) | \(stamp.vectors)")
+        }
+        // Files are queued again. Embeddings for bytes we've already seen come back from the cache.
         try store.resetAll()
-        resetOnModelChange(indexed, fingerprint)
+        try store.setMeta("fingerprint", fingerprint)
+        resetOnModelChange(indexed, fingerprint, reuse)
+    }
+
+    /// SHA-256 of the file's bytes, remembered on the row so the next pass doesn't read it again.
+    private func contentSHA(_ file: FileRecord) -> String {
+        if let stored = try? store.storedSHA(of: file.id) { return stored }
+        guard let sha = try? ModelFiles.sha256(of: URL(fileURLWithPath: file.path)), !sha.isEmpty else { return "" }
+        try? store.setContentSHA(file.id, sha)
+        return sha
+    }
+
+    /// `source | vector settings`. Nil until the model is known, and then nothing is cached (it can't be found later).
+    private var embeddingStamp: String? {
+        guard let embedderSource else { return nil }
+        return "\(embedderSource) | \(options.vectorFingerprint)"
+    }
+
+    /// One model input that might already have a vector under the file's content hash.
+    private struct Memorized<Value> {
+        var sha: String
+        var kind: String
+        var slot: String
+        var value: Value
+    }
+
+    private struct Recalled {
+        var embeddings: [Embedding]
+        var hits: Set<Int>
+    }
+
+    /// Uses a cached vector when this file's bytes were embedded under the current model settings. The model runs
+    /// only for the misses, and those results are stored for the next time.
+    private func cachedEmbeddings<Value>(_ items: [Memorized<Value>],
+                                         embed: ([Value]) throws -> [Embedding]) throws -> Recalled {
+        var out = [Embedding?](repeating: nil, count: items.count)
+        var hits = Set<Int>()
+        var missing: [Int] = []
+        let stamp = embeddingStamp
+        for (index, item) in items.enumerated() {
+            if let stamp, !item.sha.isEmpty,
+               let vector = try store.cachedEmbedding(sha: item.sha, stamp: stamp, kind: item.kind, slot: item.slot) {
+                out[index] = Embedding(vector: vector, error: nil)
+                hits.insert(index)
+            } else {
+                missing.append(index)
+            }
+        }
+        if !missing.isEmpty {
+            let computed = try embed(missing.map { items[$0].value })
+            for (offset, index) in missing.enumerated() {
+                let embedding = offset < computed.count ? computed[offset] : Embedding(vector: nil, error: "no embedding")
+                out[index] = embedding
+                if let stamp, let vector = embedding.vector, !items[index].sha.isEmpty {
+                    try store.storeEmbedding(sha: items[index].sha, stamp: stamp, kind: items[index].kind,
+                                             slot: items[index].slot, vector: vector)
+                }
+            }
+        }
+        return Recalled(embeddings: out.map { $0 ?? Embedding(vector: nil, error: "no embedding") }, hits: hits)
     }
 
     private func fullWorker() throws -> any Embedder {
@@ -491,15 +580,28 @@ public final class Indexer {
     private func images(_ batch: [FileRecord], screenshot: Bool, ready: [ReadyImage],
                         results: inout [(String, String?)]) throws {
         guard !ready.isEmpty else { return }
-        let worker = try fullWorker()
-        let vectors = try worker.embedImages(ready.map(\.image.path),
-                                             budget: screenshot ? options.screenshotBudget : options.photoBudget)
+        let budget = screenshot ? options.screenshotBudget : options.photoBudget
+        let shas = ready.map { contentSHA(batch[$0.slot]) }
+        let picture = try cachedEmbeddings(zip(shas, ready).map { sha, item in
+            Memorized(sha: sha, kind: SegmentKind.image.rawValue, slot: EmbeddingCache.imageSlot(budget: budget),
+                      value: item.image.path)
+        }) { paths in
+            try fullWorker().embedImages(paths, budget: budget)
+        }
+        let vectors = picture.embeddings
+        var shaForSlot: [Int: String] = [:]
+        for (item, sha) in zip(ready, shas) { shaForSlot[item.slot] = sha }
         // Face crops: one batch so the model stays warm. Assignment to people happens inside `addFace`.
+        // The crop's vector is cached under the photo's hash, so the same face isn't embedded again.
         let faceJobs: [(slot: Int, face: DetectedFace)] = ready.flatMap { item in
             item.image.faces.map { (item.slot, $0) }
         }
-        let faceVectors = faceJobs.isEmpty ? []
-            : try worker.embedImages(faceJobs.map(\.face.path), budget: FaceDetector.embedBudget)
+        let faceVectors = faceJobs.isEmpty ? [] : try cachedEmbeddings(faceJobs.map { job in
+            Memorized(sha: shaForSlot[job.slot] ?? "", kind: EmbeddingCache.faceKind,
+                      slot: EmbeddingCache.faceSlot(job.face.box), value: job.face.path)
+        }) { paths in
+            try fullWorker().embedImages(paths, budget: FaceDetector.embedBudget)
+        }.embeddings
         try store.db.transaction {
             for (position, item) in ready.enumerated() {
                 let file = batch[item.slot]
@@ -530,13 +632,16 @@ public final class Indexer {
                 if faces > 0 { info["faces"] = "\(faces)" }
                 if screenshot { info["ocr_chars"] = "\(item.ocr.count)" }
                 try store.finish(file.id, state: "done", info: info)
-                let note: String?
+                var note: String?
                 if screenshot {
                     note = "ocr \(item.ocr.count) chars"
                 } else if let quality = item.image.quality {
                     note = "quality \(quality.score)" + (faces > 0 ? ", \(faces) faces" : "")
                 } else {
                     note = faces > 0 ? "\(faces) faces" : nil
+                }
+                if picture.hits.contains(position) {
+                    note = [note, "embedding kept"].compactMap { $0 }.joined(separator: ", ")
                 }
                 results[item.slot] = ("done", note)
             }
@@ -561,21 +666,36 @@ public final class Indexer {
         let garbledPages = pages.filter { $0.garbled != nil }   // rendered too: among `imagePages`
         var textVectors: [Int: [Float]] = [:]   // by page number
         var imageVectors: [Embedding] = []
-        var garbledVectors: [[Float]] = []
+        var garbledVectors: [Embedding] = []
         if !wordPages.isEmpty || !imagePages.isEmpty {
-            let worker = try fullWorker()
-            let vectors = try worker.embedTexts(wordPages.map {
-                Prompts.document(title: title, text: String($0.text.prefix(4000)))
+            let sha = contentSHA(file)
+            let texts = try cachedEmbeddings(wordPages.map { page in
+                Memorized(sha: sha, kind: SegmentKind.page.rawValue, slot: EmbeddingCache.slot(loc: Double(page.number)),
+                          value: Prompts.document(title: title, text: String(page.text.prefix(4000))))
+            }) { prompts in
+                try fullWorker().embedTexts(prompts).map { Embedding(vector: $0, error: nil) }
+            }
+            textVectors = Dictionary(uniqueKeysWithValues: zip(wordPages.map(\.number), texts.embeddings).compactMap {
+                number, embedding in embedding.vector.map { (number, $0) }
             })
-            textVectors = Dictionary(uniqueKeysWithValues: zip(wordPages.map(\.number), vectors))
-            imageVectors = try worker.embedImages(imagePages.compactMap(\.imagePath), budget: options.pageBudget)
-            garbledVectors = try worker.embedTexts(garbledPages.map {
-                Prompts.document(title: title, text: String($0.garbled!.prefix(4000)))
-            })
+            imageVectors = try cachedEmbeddings(imagePages.compactMap { page -> Memorized<String>? in
+                guard let path = page.imagePath else { return nil }
+                return Memorized(sha: sha, kind: SegmentKind.pageImage.rawValue,
+                                 slot: EmbeddingCache.slot(loc: Double(page.number)), value: path)
+            }) { paths in
+                try fullWorker().embedImages(paths, budget: options.pageBudget)
+            }.embeddings
+            garbledVectors = try cachedEmbeddings(garbledPages.map { page in
+                Memorized(sha: sha, kind: SegmentKind.page.rawValue, slot: EmbeddingCache.slot(loc: Double(page.number)),
+                          value: Prompts.document(title: title, text: String(page.garbled!.prefix(4000))))
+            }) { prompts in
+                try fullWorker().embedTexts(prompts).map { Embedding(vector: $0, error: nil) }
+            }.embeddings
         }
         try store.db.transaction {
             // Meaning only: the garbled words are never shown or matched against what you type.
-            for (page, vector) in zip(garbledPages, garbledVectors) {
+            for (page, embedding) in zip(garbledPages, garbledVectors) {
+                guard let vector = embedding.vector else { continue }
                 try store.addSegment(file: file.id, kind: .page, modality: .text, loc: Double(page.number), vector: vector)
             }
             for page in textPages {
@@ -611,10 +731,17 @@ public final class Indexer {
         let title = URL(fileURLWithPath: file.path).deletingPathExtension().lastPathComponent
         // Text that's mostly digits (a data dump saved as .txt) gets keyword search only.
         let worded = chunks.indices.filter { SearchText.hasWords(chunks[$0]) }
-        let vectors = worded.isEmpty ? [] : try fullWorker().embedTexts(worded.map {
-            Prompts.document(title: title, text: chunks[$0])
+        let sha = contentSHA(file)
+        let recalled = worded.isEmpty ? Recalled(embeddings: [], hits: []) : try cachedEmbeddings(worded.map { offset in
+            Memorized(sha: sha, kind: SegmentKind.chunk.rawValue,
+                      slot: EmbeddingCache.slot(loc: Double(read.lowerBound + offset + 1)),
+                      value: Prompts.document(title: title, text: chunks[offset]))
+        }) { prompts in
+            try fullWorker().embedTexts(prompts).map { Embedding(vector: $0, error: nil) }
+        }
+        let vector = Dictionary(uniqueKeysWithValues: zip(worded, recalled.embeddings).compactMap { offset, embedding in
+            embedding.vector.map { (offset, $0) }
         })
-        let vector = Dictionary(uniqueKeysWithValues: zip(worded, vectors))
         let end = min(total, options.maxChunks)
         let unread = read.upperBound < end
         try store.db.transaction {
@@ -640,7 +767,13 @@ public final class Indexer {
             try store.finish(file.id, state: "skipped", detail: "silent or shorter than 2 s")
             return ("skipped", "silent or too short")
         }
-        let vectors = try fullWorker().embedAudio(pieces.map(\.path))
+        let sha = contentSHA(file)
+        let vectors = try cachedEmbeddings(pieces.map { piece in
+            Memorized(sha: sha, kind: SegmentKind.audio.rawValue, slot: EmbeddingCache.slot(loc: piece.start),
+                      value: piece.path)
+        }) { paths in
+            try fullWorker().embedAudio(paths)
+        }.embeddings
         try store.db.transaction {
             for (piece, embedding) in zip(pieces, vectors) {
                 try store.addSegment(file: file.id, kind: .audio, modality: .audio, loc: piece.start, locEnd: piece.end,
@@ -657,9 +790,19 @@ public final class Indexer {
             try store.finish(file.id, state: "skipped", detail: "no frames or sound")
             return ("skipped", "no frames or sound")
         }
-        let worker = try fullWorker()
-        let frameVectors = try worker.embedImages(frames.map(\.path), budget: options.frameBudget)
-        let soundVectors = try worker.embedAudio(sound.map(\.path))
+        let sha = contentSHA(file)
+        let frameVectors = frames.isEmpty ? [] : try cachedEmbeddings(frames.map { frame in
+            Memorized(sha: sha, kind: SegmentKind.frame.rawValue, slot: EmbeddingCache.slot(loc: frame.start),
+                      value: frame.path)
+        }) { paths in
+            try fullWorker().embedImages(paths, budget: options.frameBudget)
+        }.embeddings
+        let soundVectors = sound.isEmpty ? [] : try cachedEmbeddings(sound.map { piece in
+            Memorized(sha: sha, kind: SegmentKind.audio.rawValue, slot: EmbeddingCache.slot(loc: piece.start),
+                      value: piece.path)
+        }) { paths in
+            try fullWorker().embedAudio(paths)
+        }.embeddings
         try store.db.transaction {
             for (frame, embedding) in zip(frames, frameVectors) {
                 try store.addSegment(file: file.id, kind: .frame, modality: .image, loc: frame.start,

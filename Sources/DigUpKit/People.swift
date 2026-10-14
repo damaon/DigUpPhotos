@@ -27,6 +27,18 @@ public struct Person: Sendable, Equatable, Identifiable {
     }
 }
 
+/// A person's exemplar face, for a circular thumbnail.
+public struct ExemplarFace: Sendable, Equatable {
+    public var path: String
+    /// Normalized Vision box, origin bottom-left.
+    public var box: CGRect
+
+    public init(path: String, box: CGRect) {
+        self.path = path
+        self.box = box
+    }
+}
+
 /// One detected face on a photo, with its EmbeddingGemma vector and optional person link.
 public struct FaceRecord: Sendable {
     public let id: Int64
@@ -67,7 +79,11 @@ extension IndexStore {
     // MARK: Faces
 
     /// Drops faces for a file (re-index). People left with no faces are removed unless named.
+    /// Schema 1–5 indexes have no `faces` table yet; keyword migration requeues files before people are added.
     public func deleteFaces(of file: Int64) throws {
+        var ready = false
+        try db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'faces'") { _ in ready = true }
+        guard ready else { return }
         var people: [Int64] = []
         try db.query("SELECT DISTINCT person FROM faces WHERE file = ? AND person IS NOT NULL", [.int(file)]) {
             people.append($0.int(0))
@@ -127,6 +143,22 @@ extension IndexStore {
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
         try db.run("UPDATE people SET name = ? WHERE id = ?",
                    [trimmed?.isEmpty == false ? .text(trimmed!) : .null, .int(id)])
+    }
+
+    /// The exemplar face: the photo path and the normalized Vision box (origin bottom-left).
+    public func exemplarFace(ofPerson id: Int64) throws -> ExemplarFace? {
+        var face: ExemplarFace?
+        try db.query("""
+            SELECT files.path, faces.x, faces.y, faces.w, faces.h FROM people
+            JOIN faces ON faces.id = people.exemplar
+            JOIN files ON files.id = faces.file
+            WHERE people.id = ?
+            """, [.int(id)]) { row in
+            guard let path = row.text(0) else { return }
+            face = ExemplarFace(path: path, box: CGRect(x: row.double(1), y: row.double(2),
+                                                        width: row.double(3), height: row.double(4)))
+        }
+        return face
     }
 
     /// Path of the photo that holds the exemplar face, for a thumbnail.

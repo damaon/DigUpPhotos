@@ -43,17 +43,17 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
                                      backing: .buffered, defer: false)
         // An empty unified toolbar makes the title bar tall enough for the search field to sit beside the window
         // buttons.
-        window.toolbar = NSToolbar(identifier: "DigUpSearch")
+        window.toolbar = NSToolbar(identifier: "DigUpPhotosSearch")
         window.toolbarStyle = .unified
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.title = "DigUp"
+        window.title = "DigUpPhotos"
         window.minSize = NSSize(width: 820, height: 520)
         window.isReleasedWhenClosed = false
         window.delegate = self
         // The frame is remembered in the app's real defaults, so dev runs (their own -defaultsSuite) don't keep it.
         if UserDefaults.standard.string(forKey: "defaultsSuite") == nil {
-            window.setFrameAutosaveName("DigUpSearchWindow")
+            window.setFrameAutosaveName("DigUpPhotosSearchWindow")
         }
         window.contentView = NSHostingView(rootView: SearchWindowView(search: search, model: app.model, app: app))
         if window.frame.origin == .zero { window.center() }
@@ -384,6 +384,15 @@ struct SearchWindowView: View {
                     .strokeBorder(Color.accentColor.opacity(fieldFocused ? 0.6 : 0), lineWidth: 2))
                 .animation(.easeOut(duration: 0.15), value: fieldFocused)
                 Button {
+                    app.showAlbums()
+                } label: {
+                    Image(systemName: "rectangle.stack")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Albums")
+                Button {
                     search.showsPreview.toggle()
                 } label: {
                     Image(systemName: "sidebar.right")
@@ -419,7 +428,7 @@ struct SearchWindowView: View {
             VStack(spacing: 0) {
                 BrandMark()
                 Text("Choose folders to search").font(.system(size: 20, weight: .bold)).padding(.top, 18)
-                Text("DigUp only looks where you tell it to.")
+                Text("DigUpPhotos only looks where you tell it to.")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .padding(.top, 6)
@@ -461,7 +470,7 @@ struct SearchWindowView: View {
                 Button {
                     app.updates.checkNow()
                 } label: {
-                    Label("DigUp \(version) is available", systemImage: "arrow.down.circle.fill")
+                    Label("DigUpPhotos \(version) is available", systemImage: "arrow.down.circle.fill")
                         .foregroundStyle(Brand.ember)
                 }
                 .buttonStyle(.plain)
@@ -803,7 +812,7 @@ private struct SearchHome: View {
                 if let hotkey = model.hotkey {
                     HStack(spacing: 6) {
                         Keycaps(caps: hotkey.caps, size: 10)
-                        Text("opens DigUp from any app")
+                        Text("opens DigUpPhotos from any app")
                     }
                 }
             }

@@ -60,6 +60,8 @@ nonisolated final class Engine: @unchecked Sendable {
     struct QueryVector: Sendable {
         let values: [Float]
         let source: String
+        /// Vectors for the "without …" part. Search subtracts them from the main score.
+        var negatives: [[Float]] = []
     }
 
     let indexDirectory: URL
@@ -436,8 +438,14 @@ nonisolated final class Engine: @unchecked Sendable {
             if !unreadable.isEmpty { log("indexer: no access: \(unreadable.map(tildePath))") }
         case "pruned":
             log("indexer: \(int("files")) files under folders no longer chosen left the index")
+        case "kept":
+            log("indexer: saved \(int("vectors")) embeddings by file content, so they can be reused")
         case "reindex":
-            log("indexer: the model or settings changed, indexing everything again (was: \(event["from"] as? String ?? "?"))")
+            if event["reuse"] as? Bool == true {
+                log("indexer: re-reading files, reusing embeddings (was: \(event["from"] as? String ?? "?"))")
+            } else {
+                log("indexer: the model or settings changed, indexing everything again (was: \(event["from"] as? String ?? "?"))")
+            }
         case "error":
             log("indexer: \(event["message"] as? String ?? "error")")
             if event["fatal"] as? Bool == true { update { $0.activity = .failed("Indexing stopped") } }
@@ -535,15 +543,21 @@ nonisolated final class Engine: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
                 var values = vector?.values
+                var negatives = vector?.negatives ?? []
                 if let vector, let indexed = searcher?.vectorSource, indexed != vector.source {
                     if !warnedAboutSource {
                         log("meaning search is off: the index was built with \(indexed), the encoder is \(vector.source)")
                         warnedAboutSource = true
                     }
                     values = nil
+                    negatives = []
+                }
+                let ranked = Searcher.ranked(text)
+                if !ranked.excluded.isEmpty {
+                    log("search: “\(ranked.positive)” minus \(ranked.excluded.joined(separator: ", "))")
                 }
                 let hits = try? searcher?.search(text, queryVector: values, kinds: kinds, people: people, limit: limit,
-                                                 prefixLast: prefixLast)
+                                                 prefixLast: prefixLast, negativeVectors: negatives)
                 // Only files that are searched (`FolderSelection`'s rule, as the crawler walks them) and of types not
                 // skipped: a removed folder's rows (or a newly skipped type's) can outlive it until a helper syncs
                 // (indexing was paused, or the app quit first).
@@ -603,6 +617,25 @@ nonisolated final class Engine: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
                 continuation.resume(returning: try? searchStore?.exemplarPhotoPath(ofPerson: id))
+            }
+        }
+    }
+
+    /// Exemplar face box, for a circular crop in Albums.
+    func exemplarFace(ofPerson id: Int64) async -> ExemplarFace? {
+        await withCheckedContinuation { continuation in
+            searchQueue.async { [self] in
+                continuation.resume(returning: try? searchStore?.exemplarFace(ofPerson: id))
+            }
+        }
+    }
+
+    /// Trips for photos that include any of `people`.
+    func albums(ofPeople people: Set<Int64>) async -> AlbumBuild {
+        await withCheckedContinuation { continuation in
+            searchQueue.async { [self] in
+                let photos = (try? searchStore?.albumPhotos(ofPeople: people)) ?? []
+                continuation.resume(returning: AlbumClusterer.build(photos))
             }
         }
     }
@@ -704,8 +737,13 @@ nonisolated final class Engine: @unchecked Sendable {
         guard let worker = runningEncoder() else { return nil }
         defer { scheduleIdleExit() }
         do {
-            let values = try worker.embedTexts([Prompts.query(text)]).first ?? []
-            let vector = QueryVector(values: values, source: worker.info.vectorSource)
+            let phrases = Searcher.embedPhrases(text)
+            guard !phrases.isEmpty else { return nil }
+            let embedded = try worker.embedTexts(phrases.map(Prompts.query))
+            let ranked = Searcher.ranked(text)
+            let values = ranked.positive.isEmpty ? [] : (embedded.first ?? [])
+            let negatives = ranked.positive.isEmpty ? embedded : Array(embedded.dropFirst())
+            let vector = QueryVector(values: values, source: worker.info.vectorSource, negatives: negatives)
             vectorCache[text] = vector
             return vector
         } catch {

@@ -1,6 +1,5 @@
 import CoreGraphics
 import Foundation
-import Vision
 
 /// How good a photo looks, from cheap local signals (no cloud, no extra model).
 ///
@@ -15,30 +14,57 @@ public struct PhotoQuality: Sendable, Equatable {
     public let exposure: Double
     /// Luminance spread, 0…1.
     public let contrast: Double
+    /// How well a face fills and sits in the frame, 0…1. Neutral (1) when there is no face.
+    public let framing: Double
     /// Faces Vision found (0 when detection was skipped or none).
     public let faces: Int
 
     /// Version stamp stored in `info` / the index fingerprint when scoring changes.
-    public static let version = 1
+    public static let version = 2
 
+    public init(score: Int, sharpness: Double, exposure: Double, contrast: Double, faces: Int, framing: Double = 1) {
+        self.score = score
+        self.sharpness = sharpness
+        self.exposure = exposure
+        self.contrast = contrast
+        self.framing = framing
+        self.faces = faces
+    }
+
+    /// Stored on the file. Component scores are 0…100. `q_frame` is omitted when no face was found, so a landscape
+    /// is not shown as if it were composed around a person.
     public var infoFields: [String: String] {
-        ["quality": "\(score)", "quality_v": "\(Self.version)"]
+        var fields = [
+            "quality": "\(score)",
+            "quality_v": "\(Self.version)",
+            "q_sharp": "\(Self.percent(sharpness))",
+            "q_light": "\(Self.percent(exposure))",
+            "q_contrast": "\(Self.percent(contrast))",
+            "q_faces": "\(faces)",
+        ]
+        if faces > 0 { fields["q_frame"] = "\(Self.percent(framing))" }
+        return fields
+    }
+
+    private static func percent(_ value: Double) -> Int {
+        Int((value * 100).rounded().clamped(to: 0...100))
     }
 
     /// Assess a photo thumbnail (the same one DigUp embeds). Faces are detected when `detectFaces` is on.
-    public static func assess(_ image: CGImage, detectFaces: Bool = true) -> PhotoQuality {
+    /// `faceBoxes` skips that detection (the indexer already has them from `FaceDetector`).
+    public static func assess(_ image: CGImage, detectFaces: Bool = true, faceBoxes knownFaces: [CGRect]? = nil) -> PhotoQuality {
         let side = 256
         guard let gray = grayscale(image, maxSide: side) else {
-            return PhotoQuality(score: 0, sharpness: 0, exposure: 0, contrast: 0, faces: 0)
+            return PhotoQuality(score: 0, sharpness: 0, exposure: 0, contrast: 0, faces: 0, framing: 1)
         }
         let (sharp, exposure, contrast) = metrics(gray)
-        let faceBoxes = detectFaces ? faces(in: image) : []
+        let faceBoxes = knownFaces ?? (detectFaces ? FaceDetector.observations(in: image).map(\.boundingBox) : [])
         // Landscapes (no faces): face term stays neutral at 1 so they aren't ranked down.
-        let faceTerm = faceBoxes.isEmpty ? 1.0 : faceFraming(faceBoxes)
-        let combined = 0.40 * sharp + 0.25 * exposure + 0.20 * contrast + 0.15 * faceTerm
+        let framing = faceBoxes.isEmpty ? 1.0 : faceFraming(faceBoxes)
+        let combined = 0.40 * sharp + 0.25 * exposure + 0.20 * contrast + 0.15 * framing
         let score = Int((combined * 100).rounded().clamped(to: 0...100))
         return PhotoQuality(score: score, sharpness: sharp, exposure: exposure, contrast: contrast,
-                            faces: faceBoxes.count)
+                            faces: faceBoxes.count, framing: framing)
     }
 
     // MARK: Pixels
@@ -118,12 +144,6 @@ public struct PhotoQuality: Sendable, Equatable {
     }
 
     // MARK: Faces
-
-    private static func faces(in image: CGImage) -> [CGRect] {
-        let request = VNDetectFaceRectanglesRequest()
-        try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-        return (request.results ?? []).map(\.boundingBox)
-    }
 
     /// 0…1 how well faces fill and sit in the frame.
     private static func faceFraming(_ faces: [CGRect]) -> Double {

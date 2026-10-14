@@ -63,6 +63,28 @@ public struct CaptureInfo: Sendable, Equatable {
         return (latitude, longitude)
     }
 
+    /// EXIF `YYYY:MM:DD HH:MM:SS`, or ISO-8601 from video metadata.
+    public static func date(from text: String?) -> Date? {
+        guard let text, !text.isEmpty else { return nil }
+        if let date = ISO8601DateFormatter().date(from: text) { return date }
+        let parts = text.split(separator: " ")
+        guard parts.count == 2 else { return nil }
+        let day = parts[0].split(separator: ":")
+        let time = parts[1].split(separator: ":")
+        guard day.count == 3, time.count >= 2,
+              let year = Int(day[0]), let month = Int(day[1]), let dayOfMonth = Int(day[2]),
+              let hour = Int(time[0]), let minute = Int(time[1]) else { return nil }
+        let second = time.count > 2 ? Int(time[2]) ?? 0 : 0
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = dayOfMonth
+        components.hour = hour
+        components.minute = minute
+        components.second = second
+        return Calendar.current.date(from: components)
+    }
+
     private static func double(_ value: Any?) -> Double? {
         switch value {
         case let number as Double: number

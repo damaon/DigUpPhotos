@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 : "${SIGN_ID:?set SIGN_ID to a Developer ID Application identity (security find-identity -v -p codesigning)}"
 : "${NOTARY_PROFILE:?set NOTARY_PROFILE to a notarytool keychain profile (see the top of this script)}"
 VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist)
-APP=build.noindex/DigUp.app
+APP=build.noindex/DigUpPhotos.app
 OUT=build.noindex/release
 rm -rf "$OUT"
 mkdir -p "$OUT"
@@ -28,10 +28,10 @@ rm "$OUT/DigUp.zip"
 # The DMG: the app beside a link to /Applications. Signed, notarized and stapled as well.
 STAGE="$OUT/dmg"
 mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/DigUp.app"
+ditto "$APP" "$STAGE/DigUpPhotos.app"
 ln -s /Applications "$STAGE/Applications"
-DMG="$OUT/DigUp-$VERSION.dmg"
-hdiutil create -quiet -volname "DigUp" -srcfolder "$STAGE" -fs HFS+ -format ULFO -ov "$DMG"
+DMG="$OUT/DigUpPhotos-$VERSION.dmg"
+hdiutil create -quiet -volname "DigUpPhotos" -srcfolder "$STAGE" -fs HFS+ -format ULFO -ov "$DMG"
 rm -rf "$STAGE"
 codesign --force --sign "$SIGN_ID" --timestamp "$DMG"
 xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait

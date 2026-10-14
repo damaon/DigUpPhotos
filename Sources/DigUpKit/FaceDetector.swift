@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreML
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -13,18 +14,28 @@ public struct DetectedFace: Sendable {
 }
 
 enum FaceDetector {
+    /// Bump when face crops change. Photo embeddings stay; only the face rows are redone.
+    static let version = 1
     /// Most faces worth naming; beyond this a crowd photo is skipped for people matching.
     static let maxFaces = 12
     /// Soft tokens for a face crop (same budget as a video frame).
     public static let embedBudget = 70
 
+    /// Face rectangles, largest first. Runs on the CPU: the Neural Engine compiler can stay busy for hours,
+    /// and a request that waits on it never returns, so indexing never starts.
+    static func observations(in image: CGImage) -> [VNFaceObservation] {
+        let request = VNDetectFaceRectanglesRequest()
+        if let cpu = MLComputeDevice.allComputeDevices.first(where: { if case .cpu = $0 { return true }; return false }) {
+            request.setComputeDevice(cpu, for: .main)
+        }
+        try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+        return (request.results ?? [])
+            .sorted { $0.boundingBox.width * $0.boundingBox.height > $1.boundingBox.width * $1.boundingBox.height }
+    }
+
     /// Detects faces in `image` and writes padded crops into `folder`. Tiny detections are dropped.
     static func detect(in image: CGImage, to folder: URL) throws -> [DetectedFace] {
-        let request = VNDetectFaceRectanglesRequest()
-        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-        let observations = (request.results ?? [])
-            .sorted { $0.boundingBox.width * $0.boundingBox.height > $1.boundingBox.width * $1.boundingBox.height }
-            .prefix(maxFaces)
+        let observations = observations(in: image).prefix(maxFaces)
         var faces: [DetectedFace] = []
         for observation in observations {
             let box = observation.boundingBox

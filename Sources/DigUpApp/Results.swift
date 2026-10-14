@@ -116,6 +116,22 @@ struct ResultRow: Identifiable, Equatable {
         return "\(word) · \(quality)"
     }
 
+    /// Sharpness, light, contrast, and face framing, each 0…100. Nil until the photo has been scored with those parts.
+    /// Composition is "not scored" when no face was found.
+    var lookBreakdown: String? {
+        guard kind == .image,
+              let sharp = info["q_sharp"].flatMap(Int.init),
+              let light = info["q_light"].flatMap(Int.init),
+              let contrast = info["q_contrast"].flatMap(Int.init) else { return nil }
+        let composition: String
+        if let faces = info["q_faces"].flatMap(Int.init), faces > 0, let frame = info["q_frame"].flatMap(Int.init) {
+            composition = "\(frame)"
+        } else {
+            composition = "not scored"
+        }
+        return "Sharpness \(sharp) · Light \(light) · Contrast \(contrast) · Composition \(composition)"
+    }
+
     /// "Photo · Oct 1, 2026 · 37.77°N 122.42°W · 1440 × 900 · 2.1 MB", "Video · … · 0:42 · 23 MB"
     var details: String {
         let when = (taken ?? modified).formatted(date: .abbreviated, time: .omitted)
@@ -137,27 +153,8 @@ struct ResultRow: Identifiable, Equatable {
 
     /// EXIF `YYYY:MM:DD HH:MM:SS` or ISO-8601 from video metadata.
     static func parseTaken(_ text: String?) -> Date? {
-        guard let text, !text.isEmpty else { return nil }
-        if let date = iso8601.date(from: text) { return date }
-        let parts = text.split(separator: " ")
-        guard parts.count == 2 else { return nil }
-        let day = parts[0].split(separator: ":")
-        let time = parts[1].split(separator: ":")
-        guard day.count == 3, time.count >= 2,
-              let year = Int(day[0]), let month = Int(day[1]), let dayOfMonth = Int(day[2]),
-              let hour = Int(time[0]), let minute = Int(time[1]) else { return nil }
-        let second = time.count > 2 ? Int(time[2]) ?? 0 : 0
-        var components = DateComponents()
-        components.year = year
-        components.month = month
-        components.day = dayOfMonth
-        components.hour = hour
-        components.minute = minute
-        components.second = second
-        return Calendar.current.date(from: components)
+        CaptureInfo.date(from: text)
     }
-
-    private static let iso8601 = ISO8601DateFormatter()
 
     static func clock(_ seconds: Double) -> String {
         let total = Int(seconds)

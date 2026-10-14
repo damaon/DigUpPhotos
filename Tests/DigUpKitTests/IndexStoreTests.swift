@@ -29,6 +29,67 @@ import Testing
         #expect(try store.prune(keepingUnder: []) == 2)
     }
 
+    @Test func embeddingCacheSurvivesAQualityReread() throws {
+        let store = try IndexStore(directory: folder)
+        let url = folder.appendingPathComponent("photo.jpg")
+        try Data("same-bytes".utf8).write(to: url)
+        let id = try store.insert(file(url.path, inode: 9))
+        let original: [Float] = [0.1, 0.2, 0.3, 0.4]
+        try store.addSegment(file: id, kind: .image, modality: .image, vector: original)
+        let options = IndexOptions()
+        let source = "test-model"
+        try store.setMeta("fingerprint", "\(source) | \(options.vectorFingerprint) q1 f1")
+        let indexer = try Indexer(store: store, options: options, makeEmbedder: { () throws -> any Embedder in
+            throw IndexerError.fingerprintMismatch(index: "", now: "")
+        })
+        indexer.embedderSource = source
+        var reused: Bool?
+        indexer.resetOnModelChange = { _, _, reuse in reused = reuse }
+        let saved = try indexer.checkModel()
+        #expect(saved == 1)
+        #expect(reused == true)
+        #expect(try store.pendingCount() == 1)
+        var imageVectors = 0
+        try store.db.query("SELECT COUNT(vec) FROM segments WHERE kind = 'image'") { imageVectors = Int($0.int(0)) }
+        #expect(imageVectors == 0)
+        let stamp = "\(source) | \(options.vectorFingerprint)"
+        let again = try store.cachedEmbedding(sha: ModelFiles.sha256(of: url), stamp: stamp, kind: "image",
+                                              slot: EmbeddingCache.imageSlot(budget: options.photoBudget))
+        #expect(again?.count == original.count)
+        if let again {
+            for (left, right) in zip(again, original) { #expect(abs(left - right) < 0.001) }
+        }
+        // The model is not asked. A second pass finds the same bytes.
+        let lookup = try store.cachedEmbedding(sha: try store.storedSHA(of: id) ?? "", stamp: stamp, kind: "image",
+                                               slot: EmbeddingCache.imageSlot(budget: options.photoBudget))
+        #expect(lookup?.count == original.count)
+    }
+
+    @Test func aNewEmbeddingBudgetDropsTheCache() throws {
+        let store = try IndexStore(directory: folder)
+        let url = folder.appendingPathComponent("photo.jpg")
+        try Data("same-bytes".utf8).write(to: url)
+        let id = try store.insert(file(url.path, inode: 9))
+        try store.addSegment(file: id, kind: .image, modality: .image, vector: [0.5, 0.5])
+        var options = IndexOptions()
+        let source = "test-model"
+        let oldStamp = "\(source) | \(options.vectorFingerprint)"
+        try store.storeEmbedding(sha: "abc", stamp: oldStamp, kind: "image", slot: "b140", vector: [0.5, 0.5])
+        try store.setMeta("fingerprint", "\(oldStamp) q2 f1")
+        options.photoBudget = 280
+        let indexer = try Indexer(store: store, options: options, makeEmbedder: { () throws -> any Embedder in
+            throw IndexerError.fingerprintMismatch(index: "", now: "")
+        })
+        indexer.embedderSource = source
+        var reused: Bool?
+        indexer.resetOnModelChange = { _, _, reuse in reused = reuse }
+        #expect(try indexer.checkModel() == 0)
+        #expect(reused == false)
+        var cached = 0
+        try store.db.query("SELECT COUNT(*) FROM embedding_cache") { cached = Int($0.int(0)) }
+        #expect(cached == 0)
+    }
+
     @Test func scopeLimitsWhatIsWaiting() throws {
         let store = try IndexStore(directory: folder)
         try store.insert(file("/a/x.png", inode: 1))

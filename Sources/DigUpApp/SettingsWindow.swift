@@ -205,7 +205,7 @@ private struct GeneralSettings: View {
                     state.launchAtLogin = state.app.launchesAtLogin
                 })) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Open DigUp when you log in")
+                        Text("Open DigUpPhotos when you log in")
                         Text(state.loginProblem ?? "So the shortcut always works.")
                             .font(.system(size: 11))
                             .foregroundStyle(state.loginProblem == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
@@ -229,8 +229,8 @@ private struct GeneralSettings: View {
                 LabeledContent {
                     Button("Check Now") { state.app.updates.checkNow() }
                 } label: {
-                    Text(state.model.updateAvailable.map { "DigUp \($0) is available" }
-                         ?? "DigUp \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
+                    Text(state.model.updateAvailable.map { "DigUpPhotos \($0) is available" }
+                         ?? "DigUpPhotos \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
                 }
             }
         }
@@ -416,7 +416,7 @@ private struct PeopleSettings: View {
                 Text("People in your photos")
             } footer: {
                 Text("In the search window, select one or more people. Selecting two keeps only photos where "
-                     + "both appear together.")
+                     + "both appear together. Albums groups photos of the people you pick into trips.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -627,7 +627,7 @@ private struct StorageSettings: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Section {
-                Text("DigUp \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") · "
+                Text("DigUpPhotos \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") · "
                      + "EmbeddingGemma 2 by Google (Apache 2.0), run by llama.cpp (MIT).")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)

@@ -54,7 +54,7 @@ enum StatusIcon {
             return true
         }
         image.isTemplate = true   // takes the menubar's color, light or dark
-        image.accessibilityDescription = "DigUp"
+        image.accessibilityDescription = "DigUpPhotos"
         return image
     }
 
@@ -80,6 +80,7 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     private let menu = NSMenu()
     var onSearch: () -> Void = {}
     var onOpenWindow: () -> Void = {}
+    var onAlbums: () -> Void = {}
     var onSettings: () -> Void = {}
     var onChooseFolders: () -> Void = {}
     var onPauseChanged: (Bool) -> Void = { _ in }
@@ -120,7 +121,7 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
             shownPaused = paused
             shownUpdate = update
         }
-        button.toolTip = "DigUp — \(model.statusLine)"
+        button.toolTip = "DigUpPhotos — \(model.statusLine)"
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -132,7 +133,7 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         menu.addItem(header)
         menu.addItem(.separator())
         if let version = model.updateAvailable {
-            menu.addItem(ActionMenuItem("Update to DigUp \(version)…") { [weak self] in self?.onCheckForUpdates() })
+            menu.addItem(ActionMenuItem("Update to DigUpPhotos \(version)…") { [weak self] in self?.onCheckForUpdates() })
             menu.addItem(.separator())
         }
 
@@ -145,7 +146,8 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
             search.keyEquivalentModifierMask = modifiers
         }
         menu.addItem(search)
-        menu.addItem(ActionMenuItem("Open DigUp") { [weak self] in self?.onOpenWindow() })
+        menu.addItem(ActionMenuItem("Open DigUpPhotos") { [weak self] in self?.onOpenWindow() })
+        menu.addItem(ActionMenuItem("Albums…") { [weak self] in self?.onAlbums() })
         if model.hasFolders {
             menu.addItem(.separator())
             let paused = model.status.paused
@@ -164,7 +166,7 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         if model.updateAvailable == nil {
             menu.addItem(ActionMenuItem("Check for Updates…") { [weak self] in self?.onCheckForUpdates() })
         }
-        menu.addItem(ActionMenuItem("Quit DigUp", key: "q") { NSApp.terminate(nil) })
+        menu.addItem(ActionMenuItem("Quit DigUpPhotos", key: "q") { NSApp.terminate(nil) })
     }
 
     /// The menu as text, for the -debugMenu launch argument (menus can't be clicked from a script).

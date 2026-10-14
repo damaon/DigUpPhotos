@@ -3,7 +3,7 @@ import DigUpKit
 import Observation
 import SwiftUI
 
-/// First launch, in four steps: what DigUp does, which folders to search (with how long the first pass takes), the
+/// First launch, in four steps: what DigUpPhotos does, which folders to search (with how long the first pass takes), the
 /// hotkey (try it), and done. The model downloads from Get Started on, shown at the bottom of every later step, and
 /// the chosen folders start indexing as soon as you continue past them.
 final class OnboardingController: NSObject, NSWindowDelegate {
@@ -34,7 +34,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
-        window.title = "Welcome to DigUp"
+        window.title = "Welcome to DigUpPhotos"
         window.isReleasedWhenClosed = false
         window.delegate = self
         state.close = { [weak self] in self?.close() }
@@ -312,7 +312,7 @@ private struct WelcomeStep: View {
                 .resizable()
                 .frame(width: 96, height: 96)
                 .shadow(color: Brand.moss.opacity(0.35), radius: 14, y: 6)
-            Text("DigUp")
+            Text("DigUpPhotos")
                 .font(.system(size: 30, weight: .bold))
                 .padding(.top, 10)
             Text("Describe it. Dig it up.")
@@ -333,7 +333,7 @@ private struct WelcomeStep: View {
                     .font(.system(size: 18))
                     .foregroundStyle(.secondary)
                     .frame(width: 30)
-                Text("Everything is indexed and searched on this Mac. DigUp downloads its AI model (865 MB) once; "
+                Text("Everything is indexed and searched on this Mac. DigUpPhotos downloads its AI model (865 MB) once; "
                      + "after that it works offline, and nothing you index ever leaves your Mac.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
@@ -389,7 +389,7 @@ private struct FoldersStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            StepTitle(title: "What should DigUp search?",
+            StepTitle(title: "What should DigUpPhotos search?",
                       subtitle: "Pick folders, or open one to pick some of its subfolders. You can change this "
                           + "anytime in Settings.")
             ScrollView {
@@ -403,8 +403,8 @@ private struct FoldersStep: View {
             .scrollBounceBehavior(.basedOnSize)
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "info.circle").foregroundStyle(.secondary)
-                Text("macOS will ask before DigUp can read folders like Desktop, Documents and Downloads. "
-                     + "DigUp only reads files: it never changes, moves or uploads them.")
+                Text("macOS will ask before DigUpPhotos can read folders like Desktop, Documents and Downloads. "
+                     + "DigUpPhotos only reads files: it never changes, moves or uploads them.")
                     .fixedSize(horizontal: false, vertical: true)
             }
             .font(.system(size: 11))
@@ -478,7 +478,7 @@ private struct ShortcutStep: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            StepTitle(title: "Open DigUp from anywhere",
+            StepTitle(title: "Open DigUpPhotos from anywhere",
                       subtitle: "Press the shortcut in any app, describe what you're looking for, and press Return.")
             ShortcutRecorder(combo: state.model.hotkey, apply: { state.app.setHotkey($0) },
                              listening: { state.app.hotkeyRecording($0) }, capSize: 20)
@@ -547,7 +547,7 @@ private struct ReadyStep: View {
                 .frame(maxWidth: 470)
                 .padding(.top, 8)
             VStack(alignment: .leading, spacing: 16) {
-                SwitchRow(title: "Open DigUp when you log in", detail: "So the shortcut always works.",
+                SwitchRow(title: "Open DigUpPhotos when you log in", detail: "So the shortcut always works.",
                           isOn: $state.launchAtLogin)
                 Divider()
                 SwitchRow(title: AppSettings.batteryTitle, detail: AppSettings.batteryDetail,
@@ -559,7 +559,7 @@ private struct ReadyStep: View {
             .padding(.top, 28)
             HStack(spacing: 8) {
                 Image(systemName: "sparkle.magnifyingglass")
-                Text("DigUp lives in the menu bar, which shows how indexing is going.")
+                Text("DigUpPhotos lives in the menu bar, which shows how indexing is going.")
             }
             .font(.system(size: 12))
             .foregroundStyle(.secondary)
@@ -574,10 +574,10 @@ private struct ReadyStep: View {
         let rest = later >= 30 ? " Long PDFs and documents get their first pages in that time, and the rest "
             + "afterwards (about \(roughDuration(later)) more)." : ""
         if state.download.isReady {
-            return "DigUp is reading your folders\(time), newest files first. You can search right away; "
+            return "DigUpPhotos is reading your folders\(time), newest files first. You can search right away; "
                 + "results fill in as it goes." + rest
         }
-        return "DigUp starts reading your folders\(time) once the model has downloaded "
+        return "DigUpPhotos starts reading your folders\(time) once the model has downloaded "
             + "(\(state.download.progressText)). Until then, search finds files by name." + rest
     }
 }

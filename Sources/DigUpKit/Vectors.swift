@@ -10,6 +10,21 @@ enum Vectors {
         return halves.withUnsafeBufferPointer { Data(buffer: $0) }
     }
 
+    /// A stored float16 blob back into float32.
+    static func floats(_ blob: Data) -> [Float] {
+        let count = blob.count / MemoryLayout<Float16>.stride
+        guard count > 0, blob.count == count * MemoryLayout<Float16>.stride else { return [] }
+        var out = [Float](repeating: 0, count: count)
+        blob.withUnsafeBytes { raw in
+            guard let base = raw.bindMemory(to: Float16.self).baseAddress else { return }
+            out.withUnsafeMutableBufferPointer { buffer in
+                guard let destination = buffer.baseAddress else { return }
+                floats(fromHalf: base, count: count, to: destination)
+            }
+        }
+        return out
+    }
+
     /// Converts `count` float16s into float32s.
     static func floats(fromHalf source: UnsafePointer<Float16>, count: Int, to destination: UnsafeMutablePointer<Float>) {
         var from = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: source), height: 1,

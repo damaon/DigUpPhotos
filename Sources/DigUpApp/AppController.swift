@@ -17,6 +17,7 @@ final class AppController {
     private let power: PowerPolicy
     private(set) var panel: SearchPanelController!
     private(set) var searchWindow: SearchWindowController!
+    private(set) var albumsWindow: AlbumsWindowController!
     private(set) var settingsWindow: SettingsWindowController!
     private(set) var statusMenu: StatusMenuController!
     private(set) var onboarding: OnboardingController?
@@ -49,10 +50,12 @@ final class AppController {
     func start(showWindow: Bool = false) {
         panel = SearchPanelController(app: self)
         searchWindow = SearchWindowController(app: self)
+        albumsWindow = AlbumsWindowController(app: self)
         settingsWindow = SettingsWindowController(app: self)
         statusMenu = StatusMenuController(model: model)
         statusMenu.onSearch = { [weak self] in self?.panel.show() }
         statusMenu.onOpenWindow = { [weak self] in self?.showSearchWindow() }
+        statusMenu.onAlbums = { [weak self] in self?.showAlbums() }
         statusMenu.onSettings = { [weak self] in self?.showSettings() }
         statusMenu.onChooseFolders = { [weak self] in self?.chooseFolders() }
         statusMenu.onPauseChanged = { [weak self] paused in self?.engine.setPaused(paused) }
@@ -170,7 +173,7 @@ final class AppController {
         panel.allowsMultipleSelection = true
         panel.canCreateDirectories = false
         panel.prompt = prompt
-        panel.message = "Choose folders for DigUp to search."
+        panel.message = "Choose folders for DigUpPhotos to search."
         let finish = { (response: NSApplication.ModalResponse) in
             done(response == .OK ? panel.urls.map { AppSettings.folderURL($0.path) } : [])
         }
@@ -228,6 +231,10 @@ final class AppController {
         searchWindow.show(query: query, kind: kind)
     }
 
+    func showAlbums() {
+        albumsWindow.show()
+    }
+
     func showSettings(_ tab: SettingsTab = .general) {
         settingsWindow.show(tab)
     }
@@ -260,7 +267,8 @@ final class AppController {
     /// A window closed: the Dock icon goes once none is left.
     func windowClosed() {
         DispatchQueue.main.async { [self] in
-            let open = [searchWindow?.isVisible, settingsWindow?.isVisible, onboarding?.isVisible]
+            let open = [searchWindow?.isVisible, albumsWindow?.isVisible, settingsWindow?.isVisible,
+                        onboarding?.isVisible]
                 .contains { $0 == true }
             if !open {
                 NSApp.setActivationPolicy(.accessory)

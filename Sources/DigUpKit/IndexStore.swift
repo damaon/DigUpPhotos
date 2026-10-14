@@ -20,7 +20,7 @@ public struct FileRecord: Sendable {
 public final class IndexStore {
     public let directory: URL
     public let db: Database
-    static let schemaVersion: Int64 = 6
+    static let schemaVersion: Int64 = 7
 
     /// Keyword search's tokenizer. Marks (M*) count as letters, so Bengali vowel signs and Arabic harakat stay inside
     /// their words: by default SQLite splits on them ("কলকাতায়" became "কলক", "ত", "য").
@@ -86,6 +86,7 @@ public final class IndexStore {
             if (1...3).contains(version) { try migrateVectorNames() }
             if (1...4).contains(version) { try migrateLongFiles() }
             if (1...5).contains(version) { try migratePeople() }
+            if (1...6).contains(version) { try migrateEmbeddingCache() }
         }
     }
 
@@ -103,7 +104,8 @@ public final class IndexStore {
                 state TEXT NOT NULL DEFAULT 'pending',   -- pending | done | partial | skipped | failed
                 detail TEXT,                              -- why skipped/failed, or how far a long file has been read
                 info TEXT,                                -- JSON: pixels, pages, duration, date taken; read_to/read_end
-                indexed_at REAL
+                indexed_at REAL,
+                sha TEXT                                  -- SHA-256 of the bytes; the embedding cache key
             );
             CREATE INDEX files_inode ON files(device, inode);
             CREATE INDEX files_state ON files(state, kind);
@@ -120,7 +122,18 @@ public final class IndexStore {
             CREATE INDEX segments_file ON segments(file);
             CREATE VIRTUAL TABLE fts USING fts5(\(Self.ftsColumns));
             \(Self.peopleTablesSQL)
+            \(EmbeddingCache.tableSQL)
             PRAGMA user_version = \(Self.schemaVersion);
+            """)
+    }
+
+    /// Schema 6 → 7: embeddings kept by file SHA-256, so re-reading a photo for a new score does not run the model.
+    /// Nothing is queued. Vectors already stored are copied into the cache the next time the helper starts.
+    private func migrateEmbeddingCache() throws {
+        try db.execute("""
+            ALTER TABLE files ADD COLUMN sha TEXT;
+            \(EmbeddingCache.tableSQL)
+            PRAGMA user_version = 7;
             """)
     }
 
@@ -254,12 +267,13 @@ public final class IndexStore {
         try deleteSegments(of: id, keepingName: true)
         try db.run("""
             UPDATE files SET kind = ?, size = ?, mtime = ?, inode = ?, device = ?, state = 'pending', detail = NULL,
-                info = NULL, indexed_at = NULL WHERE id = ?
+                info = NULL, indexed_at = NULL, sha = NULL WHERE id = ?
             """, [.text(file.kind.rawValue), .int(file.size), .double(file.mtime), .int(Int64(bitPattern: file.inode)),
                   .int(Int64(bitPattern: file.device)), .int(id)])
     }
 
     /// Extract and embed the file again, as it is (after a better way to read it arrived).
+    /// Used while migrating an old index, before the `sha` column exists, so it doesn't touch that column.
     func requeue(_ id: Int64) throws {
         try deleteFaces(of: id)
         try deleteSegments(of: id, keepingName: true)
@@ -299,6 +313,7 @@ public final class IndexStore {
     }
 
     /// Queues every file again and forgets the fingerprint (after the model or settings changed).
+    /// The embedding cache stays: a quality or face change re-reads photos and reuses vectors for the same bytes.
     public func resetAll() throws {
         try db.transaction {
             try db.run("DELETE FROM faces")
