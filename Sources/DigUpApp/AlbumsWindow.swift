@@ -63,12 +63,18 @@ final class AlbumsModel {
     var mapMonth: Int?
     var open: Album?
     var selectedPhoto: Int64?
+    /// Empty means every photo from the open trip. Otherwise photos of any of these people.
+    var peopleFilter: Set<Int64> = []
+    /// Located photos from the open trip's days and place, including people who were not used to find the trip.
+    private(set) var tripPhotos: [AlbumPhoto] = []
+    private(set) var tripLoading = false
     /// Coordinate key (`PlaceNames.key`) → "City, Country".
     private(set) var placeNames: [String: String] = [:]
 
     @ObservationIgnored private let engine: Engine
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var placeTask: Task<Void, Never>?
+    @ObservationIgnored private var tripTask: Task<Void, Never>?
 
     init(engine: Engine) {
         self.engine = engine
@@ -85,8 +91,7 @@ final class AlbumsModel {
 
     func toggle(_ id: Int64) {
         if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }
-        open = nil
-        selectedPhoto = nil
+        closeAlbum()
         albums = []
         skipped = 0
         located = 0
@@ -96,8 +101,7 @@ final class AlbumsModel {
 
     func clear() {
         selected.removeAll()
-        open = nil
-        selectedPhoto = nil
+        closeAlbum()
         albums = []
         skipped = 0
         located = 0
@@ -108,11 +112,44 @@ final class AlbumsModel {
     func show(_ album: Album) {
         open = album
         selectedPhoto = album.cover
+        peopleFilter = []
+        tripPhotos = []
+        tripLoading = true
+        tripTask?.cancel()
+        tripTask = Task { await loadTrip(album) }
     }
 
     func closeAlbum() {
+        tripTask?.cancel()
         open = nil
         selectedPhoto = nil
+        peopleFilter = []
+        tripPhotos = []
+        tripLoading = false
+    }
+
+    func showEveryone() {
+        peopleFilter = []
+        keepSelection()
+    }
+
+    func toggleTripPerson(_ id: Int64) {
+        if peopleFilter.contains(id) { peopleFilter.remove(id) } else { peopleFilter.insert(id) }
+        keepSelection()
+    }
+
+    /// Photos on screen in the open trip.
+    var shownPhotos: [AlbumPhoto] {
+        let base = tripPhotos.isEmpty ? (open?.photos ?? []) : tripPhotos
+        guard !peopleFilter.isEmpty else { return base }
+        return base.filter { !$0.people.isDisjoint(with: peopleFilter) }
+    }
+
+    /// People who appear in the open trip's photos, in name order.
+    var tripPeople: [Person] {
+        let ids = Set(tripPhotos.flatMap(\.people))
+        return people.filter { ids.contains($0.id) }
+            .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
     }
 
     func placeLabel(for album: Album) -> String {
@@ -141,15 +178,31 @@ final class AlbumsModel {
             if let fresh = build.albums.first(where: { $0.id == open.id }) {
                 self.open = fresh
                 if let selectedPhoto, fresh.photo(selectedPhoto) == nil { self.selectedPhoto = fresh.cover }
+                tripTask?.cancel()
+                tripLoading = true
+                tripTask = Task { await loadTrip(fresh) }
             } else {
-                self.open = nil
-                selectedPhoto = nil
+                closeAlbum()
             }
         }
         syncMapPeriod()
         warmPlaces()
         log("albums: \(people.count) people, \(build.located) located, \(build.skipped) without a place, "
             + "\(build.albums.count) trips")
+    }
+
+    private func loadTrip(_ album: Album) async {
+        let photos = await engine.photos(in: album)
+        guard !Task.isCancelled, open?.id == album.id else { return }
+        tripPhotos = photos
+        tripLoading = false
+        keepSelection()
+    }
+
+    private func keepSelection() {
+        let photos = shownPhotos
+        if let selectedPhoto, photos.contains(where: { $0.id == selectedPhoto }) { return }
+        selectedPhoto = photos.first?.id ?? open?.cover
     }
 
     private func warmPlaces() {
@@ -261,7 +314,7 @@ struct AlbumsView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("People")
                     .font(.headline)
-                Text("Photos of anyone you select.")
+                Text("Their trips. Open one to see every photo from that place.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 12)
@@ -531,8 +584,11 @@ private struct AlbumDetail: View {
     let album: Album
     @Bindable var albums: AlbumsModel
 
+    private var photos: [AlbumPhoto] { albums.shownPhotos }
+
     private var photo: AlbumPhoto {
-        album.photo(albums.selectedPhoto ?? album.cover) ?? album.photos[0]
+        if let id = albums.selectedPhoto, let match = photos.first(where: { $0.id == id }) { return match }
+        return photos.first ?? album.photos[0]
     }
 
     private var columns: [GridItem] {
@@ -543,13 +599,25 @@ private struct AlbumDetail: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 header
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 14) {
-                        ForEach(album.photos) { item in
-                            photoCell(item)
+                if albums.tripLoading || !albums.tripPeople.isEmpty {
+                    filterBar
+                }
+                if photos.isEmpty {
+                    Text(albums.peopleFilter.isEmpty
+                         ? "No photos with a location in this trip."
+                         : "None of these photos show the people you picked.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 14) {
+                            ForEach(photos) { item in
+                                photoCell(item)
+                            }
                         }
+                        .padding(18)
                     }
-                    .padding(18)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -572,7 +640,7 @@ private struct AlbumDetail: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(AlbumText.title(album))
                     .font(.title3.weight(.semibold))
-                Text("\(albums.placeLabel(for: album)) · \(AlbumText.meta(album))")
+                Text("\(albums.placeLabel(for: album)) · \(AlbumText.meta(album, count: photos.count))")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -582,6 +650,44 @@ private struct AlbumDetail: View {
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
+    }
+
+    private var filterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                filterChip("Everyone", on: albums.peopleFilter.isEmpty, action: albums.showEveryone)
+                    .help("Every photo from this place on these days")
+                if albums.peopleFilter.count > 1 {
+                    Text("Any of")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 4)
+                }
+                if albums.tripLoading {
+                    ProgressView().controlSize(.small).padding(.leading, 4)
+                }
+                ForEach(albums.tripPeople) { person in
+                    let on = albums.peopleFilter.contains(person.id)
+                    filterChip(person.displayName, on: on) { albums.toggleTripPerson(person.id) }
+                        .help(on ? "Stop filtering by \(person.displayName)" : "Only photos with \(person.displayName)")
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func filterChip(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .foregroundStyle(on ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(on ? Color.accentColor : Color.primary.opacity(0.06), in: Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private func photoCell(_ item: AlbumPhoto) -> some View {
@@ -624,6 +730,7 @@ private struct AlbumDetail: View {
     private var preview: some View {
         let url = URL(fileURLWithPath: photo.path)
         let featured = album.featured.contains(photo.id)
+        let names = albums.people.filter { photo.people.contains($0.id) }.map(\.displayName).joined(separator: ", ")
         return VStack(alignment: .leading, spacing: 14) {
             ThumbnailView(url: url, side: 260)
                 .frame(maxWidth: .infinity)
@@ -638,6 +745,12 @@ private struct AlbumDetail: View {
                 }
                 Text(photo.taken.formatted(date: .abbreviated, time: .shortened))
                     .font(.headline)
+                if !names.isEmpty {
+                    Text(names)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
                 Text(AlbumText.look(photo.quality))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -652,7 +765,7 @@ private struct AlbumDetail: View {
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
             }
             .controlSize(.regular)
-            Text("In date order. Starred photos scored highest.")
+            Text("Everyone from this place, on these days. Pick people to narrow it. Starred photos scored highest.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -710,9 +823,10 @@ enum AlbumText {
         return "\(start) – \(end)"
     }
 
-    static func meta(_ album: Album) -> String {
+    static func meta(_ album: Album, count: Int? = nil) -> String {
+        let photos = count ?? album.photos.count
         let days = daySpan(album)
-        var text = "\(album.photos.count) photos · \(days) \(days == 1 ? "day" : "days")"
+        var text = "\(photos) \(photos == 1 ? "photo" : "photos") · \(days) \(days == 1 ? "day" : "days")"
         if !album.featured.isEmpty {
             text += album.featured.count == 1 ? " · 1 best" : " · \(album.featured.count) best"
         }

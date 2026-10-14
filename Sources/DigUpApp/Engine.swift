@@ -644,6 +644,29 @@ nonisolated final class Engine: @unchecked Sendable {
         }
     }
 
+    /// Every located photo from the trip's days and place, with the people in each one.
+    func photos(in album: Album) async -> [AlbumPhoto] {
+        await withCheckedContinuation { continuation in
+            searchQueue.async { [self] in
+                let sources = (try? searchStore?.locatedPhotos()) ?? []
+                var candidates: [AlbumPhoto] = []
+                candidates.reserveCapacity(sources.count)
+                for source in sources {
+                    guard let latitude = source.latitude, let longitude = source.longitude else { continue }
+                    let taken = CaptureInfo.date(from: source.takenText) ?? source.modified
+                    candidates.append(AlbumPhoto(id: source.id, path: source.path, taken: taken,
+                                                 latitude: latitude, longitude: longitude, quality: source.quality))
+                }
+                var photos = AlbumClusterer.photos(in: album, from: candidates)
+                let people = (try? searchStore?.peopleByFile(Set(photos.map(\.id)))) ?? [:]
+                for index in photos.indices {
+                    photos[index].people = people[photos[index].id] ?? []
+                }
+                continuation.resume(returning: photos)
+            }
+        }
+    }
+
     // MARK: Index overview (main window)
 
     /// What's indexed under one folder.

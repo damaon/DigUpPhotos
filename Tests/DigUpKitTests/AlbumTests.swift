@@ -123,6 +123,28 @@ import Testing
         #expect(!album.overlaps(year: 2026))
     }
 
+    @Test func sameDayNearbyPhotoJoinsTheOpenTrip() {
+        let calendar = Calendar.current
+        let afternoon = calendar.date(from: DateComponents(year: 2024, month: 8, day: 12, hour: 15))!
+        let morning = calendar.date(from: DateComponents(year: 2024, month: 8, day: 12, hour: 8))!
+        let nextDay = calendar.date(from: DateComponents(year: 2024, month: 8, day: 13, hour: 9))!
+        let members = [photo(1, afternoon), photo(2, afternoon.addingTimeInterval(3600))]
+        let album = Album(id: "trip", photos: members, latitude: homeLat, longitude: homeLon,
+                          start: members[0].taken, end: members[1].taken, featured: [], cover: 1)
+        let extra = [
+            photo(3, morning, lat: homeLat + 0.01),
+            photo(4, morning, lat: 50.06, lon: 19.94),
+            photo(5, nextDay),
+            photo(9, afternoon, lat: 10, lon: 10),
+        ]
+        var withFarMember = album
+        withFarMember.photos.append(extra[3])
+        let ids = AlbumClusterer.photos(in: album, from: extra + members).map(\.id)
+        #expect(ids == [3, 1, 2])
+        let kept = AlbumClusterer.photos(in: withFarMember, from: extra + members).map(\.id)
+        #expect(kept.contains(9))
+    }
+
     @Test func placeLineNamesCityThenCountry() {
         #expect(CaptureInfo.placeLine(locality: "Kraków", area: "Małopolskie", country: "Poland") == "Kraków, Poland")
         #expect(CaptureInfo.placeLine(locality: nil, area: "Małopolskie", country: "Poland") == "Małopolskie, Poland")
@@ -157,6 +179,11 @@ import Testing
         ]
         return Album(id: "span", photos: photos, latitude: 1, longitude: 1,
                      start: first, end: last, featured: [], cover: 1)
+    }
+
+    private func photo(_ id: Int64, _ taken: Date, lat: Double? = nil, lon: Double? = nil) -> AlbumPhoto {
+        AlbumPhoto(id: id, path: "\(id).jpg", taken: taken,
+                   latitude: lat ?? homeLat, longitude: lon ?? homeLon, quality: 50)
     }
 
     private func shot(_ id: Int64, _ day: Double, lat: Double? = nil, lon: Double? = nil,

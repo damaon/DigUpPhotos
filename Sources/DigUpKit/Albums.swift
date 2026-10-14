@@ -9,14 +9,18 @@ public struct AlbumPhoto: Sendable, Equatable, Identifiable {
     public var longitude: Double
     /// Overall look score, 0…100. Zero means it has not been scored.
     public var quality: Int
+    /// People recognized in this photo. Empty when faces were not looked up.
+    public var people: Set<Int64>
 
-    public init(id: Int64, path: String, taken: Date, latitude: Double, longitude: Double, quality: Int) {
+    public init(id: Int64, path: String, taken: Date, latitude: Double, longitude: Double, quality: Int,
+                people: Set<Int64> = []) {
         self.id = id
         self.path = path
         self.taken = taken
         self.latitude = latitude
         self.longitude = longitude
         self.quality = quality
+        self.people = people
     }
 }
 
@@ -132,6 +136,28 @@ public enum AlbumClusterer {
         return AlbumBuild(albums: albums(from: ready), skipped: skipped, located: ready.count)
     }
 
+    /// Every photo from `candidates` that belongs to this trip: already in it, or taken on its days and within
+    /// `placeRadiusKm` of its place. Date order.
+    public static func photos(in album: Album, from candidates: [AlbumPhoto]) -> [AlbumPhoto] {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: album.start)
+        let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: album.end)) ?? album.end
+        let members = Set(album.photos.map(\.id))
+        var seen = Set<Int64>()
+        var kept: [AlbumPhoto] = []
+        for photo in candidates {
+            guard seen.insert(photo.id).inserted else { continue }
+            let during = photo.taken >= start && photo.taken < end
+            let near = kilometers(album.latitude, album.longitude, photo.latitude, photo.longitude) <= placeRadiusKm
+            guard members.contains(photo.id) || (during && near) else { continue }
+            kept.append(photo)
+        }
+        for photo in album.photos where seen.insert(photo.id).inserted {
+            kept.append(photo)
+        }
+        return kept.sorted { $0.taken == $1.taken ? $0.id < $1.id : $0.taken < $1.taken }
+    }
+
     /// Newest trip first.
     public static func albums(from photos: [AlbumPhoto]) -> [Album] {
         places(of: photos)
@@ -242,5 +268,45 @@ extension IndexStore {
                 quality: row.text(6).flatMap(Int.init) ?? 0))
         }
         return photos
+    }
+
+    /// Every indexed photo that has a location.
+    public func locatedPhotos() throws -> [AlbumSourcePhoto] {
+        var photos: [AlbumSourcePhoto] = []
+        try db.query("""
+            SELECT id, path, mtime,
+                   json_extract(info, '$.taken'),
+                   json_extract(info, '$.lat'),
+                   json_extract(info, '$.lon'),
+                   json_extract(info, '$.quality')
+            FROM files
+            WHERE kind = 'image'
+              AND json_extract(info, '$.lat') IS NOT NULL
+              AND json_extract(info, '$.lon') IS NOT NULL
+            """) { row in
+            guard let path = row.text(1),
+                  let latitude = row.text(4).flatMap(Double.init),
+                  let longitude = row.text(5).flatMap(Double.init) else { return }
+            photos.append(AlbumSourcePhoto(
+                id: row.int(0), path: path, takenText: row.text(3),
+                modified: Date(timeIntervalSince1970: row.double(2)),
+                latitude: latitude, longitude: longitude,
+                quality: row.text(6).flatMap(Int.init) ?? 0))
+        }
+        return photos
+    }
+
+    /// People recognized in each of `files`.
+    public func peopleByFile(_ files: Set<Int64>) throws -> [Int64: Set<Int64>] {
+        guard !files.isEmpty else { return [:] }
+        let list = files.map(String.init).joined(separator: ",")
+        var map: [Int64: Set<Int64>] = [:]
+        try db.query("""
+            SELECT file, person FROM faces
+            WHERE person IS NOT NULL AND file IN (\(list))
+            """) { row in
+            map[row.int(0), default: []].insert(row.int(1))
+        }
+        return map
     }
 }
