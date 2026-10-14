@@ -144,6 +144,8 @@ final class SettingsState {
     func mergePeople(keeper: Int64, other: Int64) async {
         await app.engine.mergePeople(keeper: keeper, other: other)
         people = await app.engine.people()
+        app.albumsWindow?.albums.refreshPeople()
+        app.searchWindow?.search.refreshPeople()
     }
 
     /// The index changed: refresh the folder counts, at most every 2 s while files are being indexed.
@@ -432,76 +434,183 @@ private struct FolderSettings: View {
     }
 }
 
-/// Name the people DigUp clustered from faces. In search, pick several to keep only photos with all of them.
+/// Name people, and merge a person who was clustered twice.
 private struct PeopleSettings: View {
     @Bindable var state: SettingsState
     @State private var draftNames: [Int64: String] = [:]
+    /// The person who stays. The next pick is merged into them.
     @State private var mergeKeeper: Int64?
+    @State private var pending: PendingMerge?
+    @State private var suggestions: [(first: Int64, second: Int64, score: Float)] = []
+
+    private struct Suggestion: Identifiable {
+        var first: Int64
+        var second: Int64
+        var score: Float
+        var id: String { "\(first)-\(second)" }
+    }
+
+    private var suggestionRows: [Suggestion] {
+        suggestions.map { Suggestion(first: $0.first, second: $0.second, score: $0.score) }
+    }
+
+    private struct PendingMerge: Identifiable {
+        var keeper: Person
+        var other: Person
+        var id: String { "\(keeper.id)-\(other.id)" }
+    }
 
     var body: some View {
         Form {
+            if !suggestions.isEmpty, mergeKeeper == nil {
+                Section {
+                    ForEach(suggestionRows) { pair in
+                        if let first = person(pair.first), let second = person(pair.second) {
+                            let sides = kept(first, second)
+                            suggestionRow(keeper: sides.keeper, other: sides.other, score: pair.score)
+                        }
+                    }
+                } header: {
+                    Text("Likely the same person")
+                } footer: {
+                    Text("Merging keeps both face embeddings. Filtering the person who stays finds photos of either one.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
             Section {
                 if state.people.isEmpty {
                     Text("No people yet. Index photos that show faces, then name them here.")
                         .foregroundStyle(.secondary)
-                } else {
-                    ForEach(state.people) { person in
-                        HStack(spacing: 12) {
-                            PersonThumb(path: nil, personID: person.id, engine: state.app.engine)
-                            VStack(alignment: .leading, spacing: 4) {
-                                TextField("Name", text: Binding(
-                                    get: { draftNames[person.id] ?? person.name ?? "" },
-                                    set: { draftNames[person.id] = $0 }
-                                ), prompt: Text(person.displayName))
-                                .onSubmit { Task { await save(person.id) } }
-                                Text("\(person.photoCount) photos · \(person.faceCount) faces")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 8)
-                            if mergeKeeper == person.id {
-                                Text("Pick another to merge…")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                            } else if let keeper = mergeKeeper {
-                                Button("Merge into this") {
-                                    Task {
-                                        await state.mergePeople(keeper: keeper, other: person.id)
-                                        mergeKeeper = nil
-                                        draftNames[person.id] = nil
-                                    }
-                                }
-                                .controlSize(.small)
-                            } else {
-                                Button("Merge…") { mergeKeeper = person.id }
-                                    .controlSize(.small)
-                            }
-                        }
-                    }
+                } else if let keeper = mergeKeeper, let person = person(keeper) {
+                    Text("Pick the duplicate to merge into \(person.displayName). \(person.displayName)’s name is kept.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(state.people) { person in
+                    personRow(person)
                 }
             } header: {
                 Text("People in your photos")
             } footer: {
-                Text("In the search window, select one or more people. Selecting two keeps only photos where "
-                     + "both appear together. Albums groups photos of the people you pick into trips.")
+                Text("A name is saved with Return. Merge when the same person was split into two. In search, several "
+                     + "selected people keep only photos where all of them appear. Albums turns the people you pick into trips.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if mergeKeeper != nil {
                 Section {
-                    Button("Cancel merge") { mergeKeeper = nil }
+                    Button("Cancel") { mergeKeeper = nil }
                 }
             }
         }
         .formStyle(.grouped)
-        .onAppear {
-            for person in state.people { draftNames[person.id] = person.name ?? "" }
-        }
+        .frame(maxHeight: 640)
+        .onAppear { syncDrafts(state.people) }
         .onChange(of: state.people) { _, people in
-            for person in people where draftNames[person.id] == nil {
-                draftNames[person.id] = person.name ?? ""
+            syncDrafts(people)
+        }
+        .task(id: state.people.map(\.id)) {
+            suggestions = await state.app.engine.similarPeople()
+        }
+        .confirmationDialog(pending.map { "Merge \($0.other.displayName) into \($0.keeper.displayName)?" } ?? "Merge?",
+                            isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
+                            titleVisibility: .visible) {
+            Button("Merge", role: .destructive) {
+                guard let pending else { return }
+                let other = pending.other.id
+                Task {
+                    await state.mergePeople(keeper: pending.keeper.id, other: other)
+                    mergeKeeper = nil
+                    draftNames[other] = nil
+                }
+                self.pending = nil
             }
+            Button("Cancel", role: .cancel) { pending = nil }
+        } message: {
+            if let pending {
+                Text("\(pending.other.displayName)’s \(pending.other.photoCount) "
+                     + "\(pending.other.photoCount == 1 ? "photo" : "photos") move to \(pending.keeper.displayName). "
+                     + "Both face embeddings stay, so filtering \(pending.keeper.displayName) finds either one. "
+                     + "\(pending.keeper.displayName)’s name is kept.")
+            }
+        }
+    }
+
+    private func suggestionRow(keeper: Person, other: Person, score: Float) -> some View {
+        HStack(spacing: 10) {
+            PersonThumb(personID: keeper.id, engine: state.app.engine)
+            PersonThumb(personID: other.id, engine: state.app.engine)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(other.displayName) → \(keeper.displayName)")
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                Text(similarity(score))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button("Merge") { pending = PendingMerge(keeper: keeper, other: other) }
+                .controlSize(.small)
+        }
+    }
+
+    private func personRow(_ person: Person) -> some View {
+        HStack(spacing: 12) {
+            PersonThumb(personID: person.id, engine: state.app.engine, side: 44)
+            VStack(alignment: .leading, spacing: 4) {
+                TextField("Name", text: Binding(
+                    get: { draftNames[person.id] ?? person.name ?? "" },
+                    set: { draftNames[person.id] = $0 }
+                ), prompt: Text(person.displayName))
+                .onSubmit { Task { await save(person.id) } }
+                Text("\(person.photoCount) photos · \(person.faceCount) faces")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            mergeControl(person)
+        }
+    }
+
+    @ViewBuilder private func mergeControl(_ person: Person) -> some View {
+        if mergeKeeper == person.id {
+            Text("Stays")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+        } else if let keeper = mergeKeeper, let kept = self.person(keeper) {
+            Button("Merge") {
+                pending = PendingMerge(keeper: kept, other: person)
+            }
+            .controlSize(.small)
+            .help("Merge into \(kept.displayName)")
+        } else {
+            Button("Merge…") { mergeKeeper = person.id }
+                .controlSize(.small)
+        }
+    }
+
+    /// The named person stays; otherwise the one in more photos.
+    private func kept(_ a: Person, _ b: Person) -> (keeper: Person, other: Person) {
+        let aNamed = !(a.name ?? "").isEmpty
+        let bNamed = !(b.name ?? "").isEmpty
+        if aNamed != bNamed { return aNamed ? (a, b) : (b, a) }
+        if a.photoCount != b.photoCount { return a.photoCount >= b.photoCount ? (a, b) : (b, a) }
+        return a.id <= b.id ? (a, b) : (b, a)
+    }
+
+    private func similarity(_ score: Float) -> String {
+        if score >= 0.72 { return "Same face" }
+        if score >= 0.6 { return "Very similar" }
+        return "Similar"
+    }
+
+    private func person(_ id: Int64) -> Person? { state.people.first { $0.id == id } }
+
+    private func syncDrafts(_ people: [Person]) {
+        for person in people where draftNames[person.id] == nil {
+            draftNames[person.id] = person.name ?? ""
         }
     }
 
@@ -510,11 +619,11 @@ private struct PeopleSettings: View {
     }
 }
 
-/// Small thumbnail from a person's exemplar photo (loaded asynchronously).
+/// Face crop of a person's exemplar photo.
 private struct PersonThumb: View {
-    let path: String?
     let personID: Int64
     let engine: Engine
+    var side: CGFloat = 36
     @State private var image: NSImage?
 
     var body: some View {
@@ -525,15 +634,16 @@ private struct PersonThumb: View {
                     .scaledToFill()
             } else {
                 Image(systemName: "person.crop.circle.fill")
-                    .font(.system(size: 22))
+                    .font(.system(size: side * 0.55))
                     .foregroundStyle(.secondary)
             }
         }
-        .frame(width: 36, height: 36)
+        .frame(width: side, height: side)
         .clipShape(Circle())
         .task(id: personID) {
-            guard let path = await engine.exemplarPhoto(ofPerson: personID) else { return }
-            image = NSImage(contentsOf: URL(fileURLWithPath: path))
+            guard let face = await engine.exemplarFace(ofPerson: personID),
+                  let source = NSImage(contentsOf: URL(fileURLWithPath: face.path)) else { return }
+            image = FaceCrop.crop(source, box: face.box)
         }
     }
 }

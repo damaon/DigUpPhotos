@@ -616,6 +616,15 @@ nonisolated final class Engine: @unchecked Sendable {
         }
     }
 
+    /// People whose exemplar faces are close enough that they may be the same person, closest first.
+    func similarPeople() async -> [(first: Int64, second: Int64, score: Float)] {
+        await withCheckedContinuation { continuation in
+            searchQueue.async { [self] in
+                continuation.resume(returning: (try? searchStore?.similarPeople()) ?? [])
+            }
+        }
+    }
+
     /// Photo path for a person's exemplar face thumbnail.
     func exemplarPhoto(ofPerson id: Int64) async -> String? {
         await withCheckedContinuation { continuation in

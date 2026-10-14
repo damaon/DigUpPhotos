@@ -182,6 +182,54 @@ extension IndexStore {
         return path
     }
 
+    /// Each person's closest other exemplar, when that cosine is at least `minimum`. Each pair once, closest first.
+    public func similarPeople(minimum: Float = 0.5, limit: Int = 24) throws -> [(first: Int64, second: Int64, score: Float)] {
+        var rows: [(id: Int64, vector: [Float])] = []
+        try db.query("""
+            SELECT p.id, f.vec FROM people p
+            JOIN faces f ON f.id = p.exemplar
+            WHERE f.vec IS NOT NULL
+            """) { row in
+            guard let blob = row.blob(1) else { return }
+            let vector = Vectors.floats(blob)
+            guard vector.count == Vectors.dimension else { return }
+            rows.append((row.int(0), vector))
+        }
+        return Self.similarPairs(rows, minimum: minimum, limit: limit)
+    }
+
+    static func similarPairs(_ rows: [(id: Int64, vector: [Float])], minimum: Float = 0.5,
+                             limit: Int = 24) -> [(first: Int64, second: Int64, score: Float)] {
+        var nearest: [Int64: (other: Int64, score: Float)] = [:]
+        for index in rows.indices {
+            for other in (index + 1)..<rows.count {
+                let score = dot(rows[index].vector, rows[other].vector)
+                guard score >= minimum else { continue }
+                let left = rows[index].id
+                let right = rows[other].id
+                if nearest[left] == nil || score > nearest[left]!.score { nearest[left] = (right, score) }
+                if nearest[right] == nil || score > nearest[right]!.score { nearest[right] = (left, score) }
+            }
+        }
+        var seen = Set<String>()
+        var pairs: [(first: Int64, second: Int64, score: Float)] = []
+        for (id, link) in nearest {
+            let first = min(id, link.other)
+            let second = max(id, link.other)
+            guard seen.insert("\(first)-\(second)").inserted else { continue }
+            pairs.append((first, second, link.score))
+        }
+        pairs.sort { $0.score == $1.score ? $0.first < $1.first : $0.score > $1.score }
+        return Array(pairs.prefix(limit))
+    }
+
+    private static func dot(_ a: [Float], _ b: [Float]) -> Float {
+        guard a.count == b.count, !a.isEmpty else { return -1 }
+        var sum: Float = 0
+        for index in a.indices { sum += a[index] * b[index] }
+        return sum
+    }
+
     /// Merges `other` into `keeper`. Both exemplar embeddings stay, and a photo matches this person when its face
     /// is close to either one. `keeper`'s name is kept.
     public func mergePeople(keeper: Int64, other: Int64) throws {

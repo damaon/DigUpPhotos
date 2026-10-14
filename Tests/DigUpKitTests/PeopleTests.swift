@@ -29,6 +29,19 @@ import Testing
         #expect(try store.filesContaining(allPeople: []) == nil)
     }
 
+    @Test func similarPairsKeepsTheNearestFace() {
+        let anna = unit(0)
+        var duplicate = unit(0)
+        duplicate[1] = 0.15
+        let length = sqrt(duplicate.reduce(0) { $0 + $1 * $1 })
+        duplicate = duplicate.map { $0 / length }
+        let someoneElse = unit(5)
+        let pairs = IndexStore.similarPairs([(id: 1, vector: anna), (id: 2, vector: duplicate), (id: 4, vector: someoneElse)])
+        #expect(pairs.count == 1)
+        #expect(Set([pairs[0].first, pairs[0].second]) == Set([1, 2]))
+        #expect(pairs[0].score > 0.9)
+    }
+
     @Test func mergeKeepsBothEmbeddingsForFiltering() throws {
         let directory = folder.appendingPathComponent("merge-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

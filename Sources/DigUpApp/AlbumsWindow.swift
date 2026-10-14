@@ -480,7 +480,7 @@ private struct FaceChip: View {
     }
 }
 
-private enum FaceCrop {
+enum FaceCrop {
     /// Vision box (origin bottom-left) → a head-and-shoulders crop.
     static func crop(_ image: NSImage, box: CGRect) -> NSImage {
         guard box.width > 0.01, box.height > 0.01,
