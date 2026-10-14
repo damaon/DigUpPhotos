@@ -31,6 +31,25 @@ public struct CaptureInfo: Sendable, Equatable {
         return info
     }
 
+    /// "Kraków, Poland", or just the country when the city is missing. Nil when nothing was named.
+    public static func placeLine(locality: String?, area: String?, country: String?) -> String? {
+        func clean(_ text: String?) -> String? {
+            guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+            return text
+        }
+        let locality = clean(locality)
+        let area = clean(area)
+        let country = clean(country)
+        var parts: [String] = []
+        if let locality {
+            parts.append(locality)
+        } else if let area, area != country {
+            parts.append(area)
+        }
+        if let country, country != parts.last { parts.append(country) }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+
     public static func format(latitude: Double, longitude: Double) -> String {
         let ns = latitude >= 0 ? "N" : "S"
         let ew = longitude >= 0 ? "E" : "W"

@@ -63,9 +63,12 @@ final class AlbumsModel {
     var mapMonth: Int?
     var open: Album?
     var selectedPhoto: Int64?
+    /// Coordinate key (`PlaceNames.key`) → "City, Country".
+    private(set) var placeNames: [String: String] = [:]
 
     @ObservationIgnored private let engine: Engine
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var placeTask: Task<Void, Never>?
 
     init(engine: Engine) {
         self.engine = engine
@@ -112,6 +115,10 @@ final class AlbumsModel {
         selectedPhoto = nil
     }
 
+    func placeLabel(for album: Album) -> String {
+        placeNames[PlaceNames.key(album.latitude, album.longitude)] ?? album.placeLabel
+    }
+
     private func reload() async {
         generation += 1
         let token = generation
@@ -140,8 +147,25 @@ final class AlbumsModel {
             }
         }
         syncMapPeriod()
+        warmPlaces()
         log("albums: \(people.count) people, \(build.located) located, \(build.skipped) without a place, "
             + "\(build.albums.count) trips")
+    }
+
+    private func warmPlaces() {
+        for album in albums {
+            let key = PlaceNames.key(album.latitude, album.longitude)
+            if let name = PlaceNames.shared.cached(album.latitude, album.longitude) {
+                placeNames[key] = name
+            }
+        }
+        placeTask?.cancel()
+        let albums = self.albums
+        placeTask = Task {
+            await PlaceNames.shared.resolve(albums) { key, name in
+                self.placeNames[key] = name
+            }
+        }
     }
 
     /// Years that contain a trip, oldest first.
@@ -309,7 +333,7 @@ struct AlbumsView: View {
                     }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 360, maximum: 560), spacing: 16)], spacing: 16) {
                         ForEach(albums.albums) { album in
-                            TripCard(album: album) { albums.show(album) }
+                            TripCard(album: album, place: albums.placeLabel(for: album)) { albums.show(album) }
                         }
                     }
                 }
@@ -421,6 +445,7 @@ private enum FaceCrop {
 
 private struct TripCard: View {
     let album: Album
+    let place: String
     let open: () -> Void
 
     private var cover: AlbumPhoto? { album.photo(album.cover) }
@@ -433,9 +458,10 @@ private struct TripCard: View {
                     Text(AlbumText.title(album))
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(.primary)
-                    Text(album.placeLabel)
+                    Text(place)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                        .help(album.placeLabel)
                     Text(AlbumText.meta(album))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -546,10 +572,11 @@ private struct AlbumDetail: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(AlbumText.title(album))
                     .font(.title3.weight(.semibold))
-                Text("\(album.placeLabel) · \(AlbumText.meta(album))")
+                Text("\(albums.placeLabel(for: album)) · \(AlbumText.meta(album))")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .help(album.placeLabel)
             }
             Spacer()
         }

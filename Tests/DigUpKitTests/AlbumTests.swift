@@ -123,6 +123,14 @@ import Testing
         #expect(!album.overlaps(year: 2026))
     }
 
+    @Test func placeLineNamesCityThenCountry() {
+        #expect(CaptureInfo.placeLine(locality: "Kraków", area: "Małopolskie", country: "Poland") == "Kraków, Poland")
+        #expect(CaptureInfo.placeLine(locality: nil, area: "Małopolskie", country: "Poland") == "Małopolskie, Poland")
+        #expect(CaptureInfo.placeLine(locality: nil, area: nil, country: "Poland") == "Poland")
+        #expect(CaptureInfo.placeLine(locality: "  ", area: "Poland", country: "Poland") == "Poland")
+        #expect(CaptureInfo.placeLine(locality: nil, area: nil, country: nil) == nil)
+    }
+
     @Test func exifAndISODatesParse() {
         let exif = CaptureInfo.date(from: "2024:08:12 15:04:05")
         let parts = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: exif!)

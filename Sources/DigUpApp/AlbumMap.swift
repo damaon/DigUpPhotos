@@ -270,9 +270,10 @@ private struct MapPinCard: View {
                 .buttonStyle(.plain)
                 .help("Close")
             }
-            Text(pin.albums[0].placeLabel)
+            Text(albums.placeLabel(for: pin.albums[0]))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+                .help(pin.albums[0].placeLabel)
             if pin.albums.count == 1, let album = pin.albums.first {
                 single(album)
             } else {
