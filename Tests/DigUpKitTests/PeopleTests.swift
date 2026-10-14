@@ -29,6 +29,27 @@ import Testing
         #expect(try store.filesContaining(allPeople: []) == nil)
     }
 
+    @Test func mergeKeepsBothEmbeddingsForFiltering() throws {
+        let directory = folder.appendingPathComponent("merge-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = try IndexStore(directory: directory)
+        let fileA = try insertPhoto(store, name: "merge-a.jpg")
+        let fileB = try insertPhoto(store, name: "merge-b.jpg")
+        let keeper = try addFace(store, file: fileA, vector: unit(0))
+        let other = try addFace(store, file: fileB, vector: unit(5))
+        #expect(keeper != other)
+        try store.mergePeople(keeper: keeper, other: other)
+
+        let together = try #require(try store.filesContaining(allPeople: [keeper]))
+        #expect(together == Set([fileA, fileB]))
+        #expect(try store.people().map(\.id) == [keeper])
+
+        let later = try insertPhoto(store, name: "merge-later.jpg")
+        _ = try store.addFace(file: later, box: CGRect(x: 0.2, y: 0.2, width: 0.3, height: 0.3), vector: unit(5))
+        let after = try #require(try store.filesContaining(allPeople: [keeper]))
+        #expect(after == Set([fileA, fileB, later]))
+    }
+
     @Test func renamePerson() throws {
         let store = try IndexStore(directory: folder.appendingPathComponent("rename"))
         try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true)

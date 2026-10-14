@@ -56,6 +56,8 @@ public final class IndexStore {
         file = directory.appendingPathComponent(name)
         db = try Database(path: file.path)
         try migrate()
+        // Identity embeddings for a merged person. Existing indexes already at the current schema still need the table.
+        try db.execute(Self.personAnchorsSQL)
     }
 
     /// Bytes on disk: the database and its write-ahead log.
@@ -122,6 +124,7 @@ public final class IndexStore {
             CREATE INDEX segments_file ON segments(file);
             CREATE VIRTUAL TABLE fts USING fts5(\(Self.ftsColumns));
             \(Self.peopleTablesSQL)
+            \(Self.personAnchorsSQL)
             \(EmbeddingCache.tableSQL)
             PRAGMA user_version = \(Self.schemaVersion);
             """)

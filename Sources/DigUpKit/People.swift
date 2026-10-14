@@ -76,6 +76,15 @@ extension IndexStore {
         CREATE INDEX IF NOT EXISTS faces_person ON faces(person);
         """
 
+    /// The face embeddings a person is recognized by. One until two people are merged, then both.
+    static let personAnchorsSQL = """
+        CREATE TABLE IF NOT EXISTS person_anchors(
+            person INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+            face INTEGER NOT NULL REFERENCES faces(id) ON DELETE CASCADE,
+            PRIMARY KEY (person, face)
+        );
+        """
+
     // MARK: Faces
 
     /// Drops faces for a file (re-index). People left with no faces are removed unless named.
@@ -173,34 +182,66 @@ extension IndexStore {
         return path
     }
 
-    /// Merges `other` into `keeper`: all faces move, then `other` is deleted. Keeps `keeper`'s name.
+    /// Merges `other` into `keeper`. Both exemplar embeddings stay, and a photo matches this person when its face
+    /// is close to either one. `keeper`'s name is kept.
     public func mergePeople(keeper: Int64, other: Int64) throws {
         guard keeper != other else { return }
         try db.transaction {
+            try rememberAnchor(of: keeper)
+            try rememberAnchor(of: other)
+            try db.run("""
+                INSERT OR IGNORE INTO person_anchors(person, face)
+                SELECT ?, face FROM person_anchors WHERE person = ?
+                """, [.int(keeper), .int(other)])
+            try db.run("DELETE FROM person_anchors WHERE person = ?", [.int(other)])
             try db.run("UPDATE faces SET person = ? WHERE person = ?", [.int(keeper), .int(other)])
-            try db.run("UPDATE people SET exemplar = COALESCE(exemplar, (SELECT exemplar FROM people WHERE id = ?)) WHERE id = ?",
-                       [.int(other), .int(keeper)])
+            try db.run("""
+                UPDATE people SET exemplar = COALESCE(exemplar, (SELECT exemplar FROM people WHERE id = ?)) WHERE id = ?
+                """, [.int(other), .int(keeper)])
             try db.run("DELETE FROM people WHERE id = ?", [.int(other)])
         }
     }
 
+    /// The person's exemplar becomes an identity embedding, if it is not one already.
+    private func rememberAnchor(of person: Int64) throws {
+        try db.run("""
+            INSERT OR IGNORE INTO person_anchors(person, face)
+            SELECT id, exemplar FROM people WHERE id = ? AND exemplar IS NOT NULL
+            """, [.int(person)])
+    }
+
     // MARK: Matching
 
-    /// Nearest person by exemplar face cosine, or a new person when nothing is close enough.
+    /// Nearest person by identity embeddings, or a new person when nothing is close enough.
+    /// A merged person has both embeddings: a face matches when it is close to either one.
     private func matchOrCreatePerson(vector: [Float]) throws -> Int64 {
         var bestID: Int64?
         var bestScore: Float = -1
+        var anchored = Set<Int64>()
+        func consider(_ person: Int64, _ blob: Data?) {
+            guard let blob else { return }
+            let score = cosine(vector, half: blob)
+            if score > bestScore {
+                bestScore = score
+                bestID = person
+            }
+        }
+        try db.query("""
+            SELECT a.person, f.vec FROM person_anchors a
+            JOIN faces f ON f.id = a.face
+            WHERE f.vec IS NOT NULL
+            """) { row in
+            anchored.insert(row.int(0))
+            consider(row.int(0), row.blob(1))
+        }
         try db.query("""
             SELECT p.id, f.vec FROM people p
             JOIN faces f ON f.id = p.exemplar
             WHERE f.vec IS NOT NULL
             """) { row in
-            guard let blob = row.blob(1), blob.count == Vectors.dimension * 2 else { return }
-            let score = cosine(vector, half: blob)
-            if score > bestScore {
-                bestScore = score
-                bestID = row.int(0)
-            }
+            let person = row.int(0)
+            guard !anchored.contains(person) else { return }
+            consider(person, row.blob(1))
         }
         if let bestID, bestScore >= Self.personMatchThreshold { return bestID }
         try db.run("INSERT INTO people(name) VALUES(NULL)")
