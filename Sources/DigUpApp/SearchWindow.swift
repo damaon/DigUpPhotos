@@ -222,6 +222,9 @@ final class SearchModel {
     var selection: String?
     var showWeaker = false
     var showsPreview = true
+    /// "Copied N paths", for a moment after the file list goes to the clipboard.
+    private(set) var listNote: String?
+    @ObservationIgnored private var listNoteTask: Task<Void, Never>?
     /// You moved the selection with the arrow keys since the last edit: Space and ← → act on results then.
     private(set) var navigated = false
     /// The grid's columns right now (↑ ↓ move by a row).
@@ -280,6 +283,16 @@ final class SearchModel {
     /// The file in its app, at the page or moment that matched when the app can be told where.
     func open(_ row: ResultRow) {
         engine.open(row)
+    }
+
+    func noteCopied(_ count: Int) {
+        listNote = count == 1 ? "Copied 1 path" : "Copied \(count) paths"
+        listNoteTask?.cancel()
+        listNoteTask = Task {
+            try? await Task.sleep(for: .seconds(1.6))
+            guard !Task.isCancelled else { return }
+            listNote = nil
+        }
     }
 
     func move(by step: Int) {
@@ -504,6 +517,17 @@ struct SearchWindowView: View {
                 .lineLimit(1)
                 .help("Folders and indexing")
             Spacer()
+            if !search.rows.isEmpty {
+                Menu {
+                    Button("Copy Paths") { app.copySearchFileList() }
+                    Button("Save File List…") { app.exportSearchFileList() }
+                } label: {
+                    Text(search.listNote ?? "File List")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Paths of these results, one per line, to paste or save for another program")
+            }
             if search.hasResults, !search.query.isEmpty {
                 Text(model.resultsCaveat ?? resultCount).lineLimit(1)
             }

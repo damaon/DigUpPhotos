@@ -171,6 +171,12 @@ struct SearchPanelView: View {
             Text(statusText)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+            if !controller.rows.isEmpty {
+                Button("Copy Paths") { controller.copyFileList() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Copy these paths, one per line, to pass to another program")
+            }
             Spacer(minLength: 8)
             Text(keysText)
                 .foregroundStyle(.tertiary)

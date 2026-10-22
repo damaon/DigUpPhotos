@@ -376,6 +376,17 @@ final class SearchPanelController {
         flash("Copied \(row.name)")
     }
 
+    /// The results on screen, one absolute path per line, for another program to read.
+    func copyFileList() {
+        let count = FileList.copy(rows, to: pasteboard)
+        guard count > 0 else { NSSound.beep(); return }
+        flashCopied(count)
+    }
+
+    func flashCopied(_ count: Int) {
+        flash(count == 1 ? "Copied 1 path" : "Copied \(count) paths")
+    }
+
     /// The search window, with this query (and only one kind, if given): for a bigger look.
     func openInWindow(_ kind: ResultGroupKind? = nil) {
         let text = query

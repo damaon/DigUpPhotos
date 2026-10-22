@@ -262,6 +262,41 @@ struct ResultSet: Equatable {
     var count: Int { strongRows.count + weaker.count }
 }
 
+/// The results on screen as a plain file list: absolute paths, one per line, the way `ls` prints names.
+enum FileList {
+    static func text(_ rows: [ResultRow]) -> String {
+        var seen = Set<String>()
+        let paths = rows.map(\.id).filter { seen.insert($0).inserted }
+        guard !paths.isEmpty else { return "" }
+        return paths.joined(separator: "\n") + "\n"
+    }
+
+    /// Puts that list on `pasteboard` and returns how many paths it holds.
+    @discardableResult
+    static func copy(_ rows: [ResultRow], to pasteboard: NSPasteboard = .general) -> Int {
+        let text = text(rows)
+        guard !text.isEmpty else { return 0 }
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        return text.filter { $0 == "\n" }.count
+    }
+
+    /// A `.txt` name from the query, safe to offer in a save panel.
+    static func suggestedName(for query: String) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        var name = ""
+        for scalar in trimmed.unicodeScalars {
+            if scalar.value < 32 || scalar == "/" || scalar == ":" {
+                if name.last != "-" { name.append("-") }
+            } else {
+                name.append(Character(scalar))
+            }
+        }
+        let base = String(name.prefix(80)).trimmingCharacters(in: CharacterSet(charactersIn: "- "))
+        return (base.isEmpty ? "files" : base) + ".txt"
+    }
+}
+
 extension FileKind {
     var title: String {
         switch self {

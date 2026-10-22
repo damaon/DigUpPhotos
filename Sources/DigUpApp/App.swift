@@ -72,6 +72,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(ActionMenuItem("New Search", key: "n") { [weak app] in app?.showSearchWindow(query: "") })
         fileMenu.addItem(ActionMenuItem("Albums…") { [weak app] in app?.showAlbums() })
+        fileMenu.addItem(.separator())
+        fileMenu.addItem(ActionMenuItem("Copy File List", key: "C") { [weak app] in app?.copySearchFileList() })
+        fileMenu.addItem(ActionMenuItem("Export File List…") { [weak app] in app?.exportSearchFileList() })
+        fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
 
         let editMenu = NSMenu(title: "Edit")

@@ -1,6 +1,7 @@
 import AppKit
 import DigUpKit
 import ServiceManagement
+import UniformTypeIdentifiers
 
 /// Owns the app's parts (engine, model download, hotkey, panel, windows, menu) and carries out what they ask for:
 /// new folders, a new hotkey, the login item, which window to show.
@@ -260,6 +261,60 @@ final class AppController {
 
     func showSearchWindow(query: String? = nil, kind: ResultGroupKind? = nil) {
         searchWindow.show(query: query, kind: kind)
+    }
+
+    /// Copies the results on screen as absolute paths, one per line.
+    func copySearchFileList() {
+        guard let source = fileListSource() else { NSSound.beep(); return }
+        let count = FileList.copy(source.rows, to: source.pasteboard)
+        guard count > 0 else { NSSound.beep(); return }
+        source.note(count)
+    }
+
+    /// Saves that same list as a text file.
+    func exportSearchFileList() {
+        guard let source = fileListSource() else { NSSound.beep(); return }
+        let text = FileList.text(source.rows)
+        guard !text.isEmpty else { NSSound.beep(); return }
+        let save = NSSavePanel()
+        save.allowedContentTypes = [.plainText]
+        save.canCreateDirectories = true
+        save.nameFieldStringValue = FileList.suggestedName(for: source.query)
+        save.prompt = "Save"
+        save.message = "One path per line, in the order of these results."
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK, let url = save.url else { return }
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                log("file list: \(error.localizedDescription)")
+                NSAlert(error: error).runModal()
+            }
+        }
+        if let window = NSApp.keyWindow {
+            save.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(save.runModal())
+        }
+    }
+
+    /// The search that's in front: the panel when it's key, otherwise the search window.
+    private func fileListSource() -> (rows: [ResultRow], query: String, pasteboard: NSPasteboard, note: (Int) -> Void)? {
+        let windowRows = searchWindow?.search.rows ?? []
+        let panelRows = panel?.rows ?? []
+        let panelKey = panel?.isVisible == true && NSApp.keyWindow?.windowNumber == panel?.windowNumber
+        if panelKey, !panelRows.isEmpty, let panel {
+            return (panelRows, panel.query, panel.pasteboard, { [weak panel] count in
+                panel?.flashCopied(count)
+            })
+        }
+        if searchWindow?.isVisible == true, !windowRows.isEmpty, let search = searchWindow?.search {
+            return (windowRows, search.query, .general, { [weak search] count in search?.noteCopied(count) })
+        }
+        if panel?.isVisible == true, !panelRows.isEmpty, let panel {
+            return (panelRows, panel.query, panel.pasteboard, { [weak panel] count in panel?.flashCopied(count) })
+        }
+        return nil
     }
 
     func showAlbums() {
