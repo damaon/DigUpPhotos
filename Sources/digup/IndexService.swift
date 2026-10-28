@@ -96,6 +96,8 @@ final class IndexService: @unchecked Sendable {
                 guard finishLongFiles() else { break }
                 if lock.withLock({ syncRequested }) { continue }
             }
+            // Faces that came in since people were last grouped.
+            if (try? main.store.clusterPeople(force: true)) == true { emit(["event": "people"]) }
             emitCounts("idle")
             // Nothing warm to keep around: leave now. Else wait a little for more work.
             guard model.isRunning, waitForWork() else { break }

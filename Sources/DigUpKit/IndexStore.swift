@@ -20,7 +20,7 @@ public struct FileRecord: Sendable {
 public final class IndexStore {
     public let directory: URL
     public let db: Database
-    static let schemaVersion: Int64 = 7
+    static let schemaVersion: Int64 = 8
 
     /// Keyword search's tokenizer. Marks (M*) count as letters, so Bengali vowel signs and Arabic harakat stay inside
     /// their words: by default SQLite splits on them ("কলকাতায়" became "কলক", "ত", "য").
@@ -43,6 +43,8 @@ public final class IndexStore {
         }
     }
     private var scopeSQL = ""
+    /// Indexing's view of people (`FaceAssigner`), so a new face needn't read every face.
+    var faceAssignerCache: FaceAssigner?
     private var scopeValues: [SQLValue] = []
 
     /// The index's file in the index folder.
@@ -56,8 +58,6 @@ public final class IndexStore {
         file = directory.appendingPathComponent(name)
         db = try Database(path: file.path)
         try migrate()
-        // Identity embeddings for a merged person. Existing indexes already at the current schema still need the table.
-        try db.execute(Self.personAnchorsSQL)
     }
 
     /// Bytes on disk: the database and its write-ahead log.
@@ -89,6 +89,7 @@ public final class IndexStore {
             if (1...4).contains(version) { try migrateLongFiles() }
             if (1...5).contains(version) { try migratePeople() }
             if (1...6).contains(version) { try migrateEmbeddingCache() }
+            if (1...7).contains(version) { try migratePeopleLocked() }
         }
     }
 
@@ -124,7 +125,6 @@ public final class IndexStore {
             CREATE INDEX segments_file ON segments(file);
             CREATE VIRTUAL TABLE fts USING fts5(\(Self.ftsColumns));
             \(Self.peopleTablesSQL)
-            \(Self.personAnchorsSQL)
             \(EmbeddingCache.tableSQL)
             PRAGMA user_version = \(Self.schemaVersion);
             """)
@@ -145,6 +145,38 @@ public final class IndexStore {
         try db.execute("""
             \(Self.peopleTablesSQL)
             PRAGMA user_version = 6;
+            """)
+    }
+
+    /// Schema 7 → 8: people the user named or merged stay as they are when faces are grouped again (`clusterPeople`);
+    /// that takes the place of a merged person's identity embeddings (`person_anchors`). Grouping until now could put
+    /// many people under one, so such a person keeps only the faces the user saw (the thumbnail, and each merged
+    /// person's); everyone else's faces are grouped again from scratch. (New face crops come with
+    /// `FaceDetector.version`.)
+    private func migratePeopleLocked() throws {
+        var columns: Set<String> = []
+        try db.query("PRAGMA table_info(people)") { if let name = $0.text(1) { columns.insert(name) } }
+        if !columns.contains("locked") {
+            try db.execute("ALTER TABLE people ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
+        }
+        try db.execute("CREATE TEMP TABLE seen_faces(face INTEGER PRIMARY KEY)")
+        try db.execute("INSERT OR IGNORE INTO seen_faces SELECT exemplar FROM people WHERE exemplar IS NOT NULL")
+        var anchors = false
+        try db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'person_anchors'") { _ in anchors = true }
+        if anchors {
+            try db.execute("""
+                UPDATE people SET locked = 1 WHERE id IN (SELECT person FROM person_anchors);
+                INSERT OR IGNORE INTO seen_faces SELECT face FROM person_anchors;
+                DROP TABLE person_anchors;
+                """)
+        }
+        try db.execute("""
+            UPDATE people SET locked = 1 WHERE name IS NOT NULL;
+            UPDATE faces SET person = NULL
+                WHERE person IN (SELECT id FROM people WHERE locked = 0) OR id NOT IN (SELECT face FROM seen_faces);
+            DELETE FROM people WHERE locked = 0;
+            DROP TABLE temp.seen_faces;
+            PRAGMA user_version = 8;
             """)
     }
 
@@ -266,7 +298,6 @@ public final class IndexStore {
 
     /// The file changed on disk: drop what was extracted from it and queue it again.
     public func requeue(_ id: Int64, as file: Candidate) throws {
-        try deleteFaces(of: id)
         try deleteSegments(of: id, keepingName: true)
         try db.run("""
             UPDATE files SET kind = ?, size = ?, mtime = ?, inode = ?, device = ?, state = 'pending', detail = NULL,
@@ -278,7 +309,6 @@ public final class IndexStore {
     /// Extract and embed the file again, as it is (after a better way to read it arrived).
     /// Used while migrating an old index, before the `sha` column exists, so it doesn't touch that column.
     func requeue(_ id: Int64) throws {
-        try deleteFaces(of: id)
         try deleteSegments(of: id, keepingName: true)
         try db.run("UPDATE files SET state = 'pending', detail = NULL, info = NULL, indexed_at = NULL WHERE id = ?",
                    [.int(id)])
@@ -319,8 +349,6 @@ public final class IndexStore {
     /// The embedding cache stays: a quality or face change re-reads photos and reuses vectors for the same bytes.
     public func resetAll() throws {
         try db.transaction {
-            try db.run("DELETE FROM faces")
-            try db.run("DELETE FROM people")
             try db.run("DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE kind != 'name')")
             try db.run("DELETE FROM segments WHERE kind != 'name'")
             try db.run("UPDATE files SET state = 'pending', detail = NULL, info = NULL, indexed_at = NULL")

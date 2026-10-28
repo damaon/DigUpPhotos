@@ -533,6 +533,7 @@ public final class Indexer {
         }
         var results = [(String, String?)](repeating: ("failed", nil), count: batch.count)
         for (slot, outcome) in prepared.outcomes {
+            if batch[slot].kind == .image { try store.deleteFaces(of: batch[slot].id) }
             try store.finish(batch[slot].id, state: outcome.state, detail: outcome.detail)
             results[slot] = (outcome.state, outcome.detail)
         }
@@ -591,26 +592,27 @@ public final class Indexer {
         let vectors = picture.embeddings
         var shaForSlot: [Int: String] = [:]
         for (item, sha) in zip(ready, shas) { shaForSlot[item.slot] = sha }
-        // Face crops: one batch so the model stays warm. Assignment to people happens inside `addFace`.
+        // Face crops: one batch so the model stays warm. Assignment to people happens inside `replaceFaces`.
         // The crop's vector is cached under the photo's hash, so the same face isn't embedded again.
         let faceJobs: [(slot: Int, face: DetectedFace)] = ready.flatMap { item in
             item.image.faces.map { (item.slot, $0) }
         }
-        let faceVectors = faceJobs.isEmpty ? [] : try cachedEmbeddings(faceJobs.map { job in
+        // Faces are extra: if they can't be embedded, the photos still are.
+        let faceVectors = faceJobs.isEmpty ? [] : (try? cachedEmbeddings(faceJobs.map { job in
             Memorized(sha: shaForSlot[job.slot] ?? "", kind: EmbeddingCache.faceKind,
                       slot: EmbeddingCache.faceSlot(job.face.box), value: job.face.path)
         }) { paths in
             try fullWorker().embedImages(paths, budget: FaceDetector.embedBudget)
-        }.embeddings
+        }.embeddings) ?? []
         try store.db.transaction {
             for (position, item) in ready.enumerated() {
                 let file = batch[item.slot]
                 guard let vector = vectors[position].vector else {
                     try store.finish(file.id, state: "failed", detail: vectors[position].error)
+                    try store.deleteFaces(of: file.id)
                     results[item.slot] = ("failed", vectors[position].error)
                     continue
                 }
-                try store.deleteFaces(of: file.id)
                 try store.addSegment(file: file.id, kind: .image, modality: .image, vector: vector)
                 // The words on screen are for keyword search: codes, names and errors typed exactly. Meaning comes from
                 // the picture alone; a vector of the words made screenshots outrank better matches (2026-10-08).
@@ -618,12 +620,10 @@ public final class Indexer {
                     try store.addSegment(file: file.id, kind: .ocr, modality: .text, excerpt: excerpt(item.ocr),
                                          text: item.ocr)
                 }
-                var faces = 0
-                for (jobIndex, job) in faceJobs.enumerated() where job.slot == item.slot {
-                    guard let faceVector = faceVectors[jobIndex].vector else { continue }
-                    try store.addFace(file: file.id, box: job.face.box, vector: faceVector)
-                    faces += 1
-                }
+                let found = faceJobs.indices.filter { faceJobs[$0].slot == item.slot && $0 < faceVectors.count }
+                    .compactMap { index in faceVectors[index].vector.map { (box: faceJobs[index].face.box, vector: $0) } }
+                try store.replaceFaces(of: file.id, with: found)
+                let faces = found.count
                 var info = ["width": "\(item.image.width)", "height": "\(item.image.height)"]
                 info.merge(item.image.capture.infoFields()) { _, new in new }
                 if let quality = item.image.quality {
@@ -646,6 +646,8 @@ public final class Indexer {
                 results[item.slot] = ("done", note)
             }
         }
+        // People are grouped again as faces add up (each time a quarter more); the rest once indexing is idle.
+        if !faceJobs.isEmpty { try store.clusterPeople() }
     }
 
     /// Pages `read` of a PDF (all of a short one, a step of a long one). A long one stays `partial` with `read_to` and

@@ -14,7 +14,8 @@ let usage = """
                                               of long PDFs and documents
       digup search <words>... [--kind K,K] [--person ID]... [-n 10] [--json]
                                               --person is AND (all on one photo)
-      digup people [--rename ID=Name]         list people from face clusters, or name one
+      digup people [--rename ID=Name] [--regroup]
+                                              list people from face clusters, name one, or group faces again
       digup status                            what's in the index
       digup eval <queries.json> [-n 10]       recall of known answers (see evals/)
       digup index-service <folder>... [--backfill] [--prune]
@@ -296,6 +297,7 @@ func index(_ args: Arguments) throws {
     } else {
         print("done in \(duration(Date().timeIntervalSince(started))): " + statesLine(states))
     }
+    if try store.clusterPeople(force: true) { print("people: faces grouped again (digup people)") }
     // The rest of long files, as the app does once nothing is pending (not after a --limit run: things still are).
     guard limit == nil, try store.unfinishedCount().files > 0 else { return }
     started = Date()
@@ -379,6 +381,9 @@ func people(_ args: Arguments) throws {
         try store.renamePerson(id, to: parts[1])
         print("renamed person \(id) to “\(parts[1])”")
         return
+    }
+    if args.flags.contains("--regroup") {
+        try store.regroupPeople()
     }
     let people = try store.people()
     if people.isEmpty {

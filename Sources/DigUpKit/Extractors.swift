@@ -55,7 +55,7 @@ enum ImageExtractor {
         ]
         guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else { throw ExtractError.unreadable("can't decode image") }
-        let faces = detectFaces ? ((try? FaceDetector.detect(in: thumbnail, to: folder)) ?? []) : []
+        let faces = detectFaces ? ((try? FaceDetector.detect(in: thumbnail, source: source, to: folder)) ?? []) : []
         // One detection: quality scoring uses those boxes instead of asking Vision again.
         let quality = scoreQuality
             ? PhotoQuality.assess(thumbnail, detectFaces: false, faceBoxes: faces.map(\.box))

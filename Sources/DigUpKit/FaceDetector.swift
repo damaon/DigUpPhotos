@@ -13,13 +13,15 @@ public struct DetectedFace: Sendable {
     public let path: String
 }
 
-enum FaceDetector {
+public enum FaceDetector {
     /// Bump when face crops change. Photo embeddings stay; only the face rows are redone.
-    static let version = 1
-    /// Most faces worth naming; beyond this a crowd photo is skipped for people matching.
+    /// 2: crops from a bigger copy of the photo, less margin, 140 tokens (2026-10-28).
+    static let version = 2
+    /// Most faces worth naming: the biggest ones on a crowd photo are kept.
     static let maxFaces = 12
-    /// Soft tokens for a face crop (same budget as a video frame).
-    public static let embedBudget = 70
+    /// Soft tokens for a face crop. 140 rather than 70 tells people apart better (fewer mixed-up people, 2026-10-28)
+    /// for twice the time per face.
+    public static let embedBudget = 140
 
     /// Face rectangles, largest first. Runs on the CPU: the Neural Engine compiler can stay busy for hours,
     /// and a request that waits on it never returns, so indexing never starts.
@@ -65,18 +67,39 @@ enum FaceDetector {
         return smile(in: image)
     }
 
-    /// Detects faces in `image` and writes padded crops into `folder`. Tiny detections are dropped.
-    static func detect(in image: CGImage, to folder: URL) throws -> [DetectedFace] {
-        let observations = observations(in: image).prefix(maxFaces)
-        var faces: [DetectedFace] = []
-        for observation in observations {
-            let box = observation.boundingBox
-            // Skip dust / false positives (under ~1.2% of the frame).
-            guard box.width * box.height >= 0.012 else { continue }
-            let crop = try crop(image, box: box, pad: 0.28, maxPixel: 384, to: folder)
-            faces.append(DetectedFace(box: box, path: crop.path))
+    /// Margin around Vision's box, relative to its size. Less background, hair and hats in the crop means fewer people
+    /// grouped by where they were rather than who they are (2026-10-28, `cropSide`).
+    static let cropPad: CGFloat = 0.10
+    /// Pixels across a face crop. Crops come from a copy of the photo big enough to have them, not from the index's
+    /// 1024-pixel one: a face that's 2% of a group photo is ~100 pixels there.
+    static let cropSide = 384
+
+    /// Detects faces in `image` and writes padded crops into `folder`. Tiny detections are dropped. With `source` (the
+    /// photo `image` was made from), crops come from a bigger copy of it when the faces are small in `image`.
+    static func detect(in image: CGImage, source: CGImageSource? = nil, to folder: URL) throws -> [DetectedFace] {
+        // Skip dust / false positives (under ~1.2% of the frame).
+        let boxes = observations(in: image).prefix(maxFaces).map(\.boundingBox).filter { $0.width * $0.height >= 0.012 }
+        guard !boxes.isEmpty else { return [] }
+        let large = source.flatMap { larger(image, from: $0, for: boxes) } ?? image
+        return try boxes.map { box in
+            DetectedFace(box: box, path: try crop(large, box: box, pad: cropPad, maxPixel: cropSide, to: folder).path)
         }
-        return faces
+    }
+
+    /// A copy of the photo in which the smallest of `boxes` is `cropSide` pixels across (at most 4096 pixels long),
+    /// or nil when `image` already is one.
+    private static func larger(_ image: CGImage, from source: CGImageSource, for boxes: [CGRect]) -> CGImage? {
+        let longest = CGFloat(max(image.width, image.height))
+        let smallest = boxes.map { max($0.width * CGFloat(image.width), $0.height * CGFloat(image.height)) }.min() ?? 0
+        guard smallest > 0 else { return nil }
+        let wanted = min(4096, longest * CGFloat(cropSide) / (smallest * (1 + 2 * cropPad)))
+        guard wanted > longest * 1.1 else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: Int(wanted),
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
     /// Loads the photo (or its index thumbnail) and detects faces into `folder`.
@@ -91,6 +114,27 @@ enum FaceDetector {
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return [] }
         return try detect(in: image, to: folder)
+    }
+
+    /// A square-ish picture of the face at `box` on the photo at `url`, at most `side` pixels: a person's thumbnail.
+    /// Decodes a downscaled copy, never the full photo.
+    public static func thumbnail(of url: URL, box: CGRect, side: Int) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
+        else { return nil }
+        // Big enough that the face has `side` pixels across, whatever share of the photo it is.
+        let maxPixel = min(4096, Int(Double(side) / max(box.width, box.height, 0.01) * 1.5))
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        let width = CGFloat(image.width), height = CGFloat(image.height)
+        let rect = CGRect(x: box.minX * width, y: (1 - box.maxY) * height, width: box.width * width,
+                          height: box.height * height)
+            .insetBy(dx: -box.width * width * 0.2, dy: -box.height * height * 0.2)
+            .intersection(CGRect(x: 0, y: 0, width: width, height: height))
+        return image.cropping(to: rect.integral)
     }
 
     /// Crops `box` (Vision coords) with `pad` relative margin, scaled to at most `maxPixel`.

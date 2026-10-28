@@ -9,7 +9,7 @@ public struct Person: Sendable, Equatable, Identifiable {
     public var faceCount: Int
     /// How many distinct photos contain this person.
     public var photoCount: Int
-    /// A face id used as the thumbnail (first face assigned).
+    /// The face shown as the thumbnail: the one most like the rest of them.
     public var exemplarFace: Int64?
 
     public init(id: Int64, name: String?, faceCount: Int, photoCount: Int, exemplarFace: Int64?) {
@@ -50,9 +50,48 @@ public struct FaceRecord: Sendable {
     public var person: Int64?
 }
 
+/// What indexing needs to put a new face with a person without reading every face again: the average face and each
+/// person's sum of centered faces (`FaceClustering`). Valid while the `people_gen` it was built at is current.
+final class FaceAssigner {
+    let generation: String
+    let mean: [Float]
+    var sums: [Int64: [Float]]
+
+    init(generation: String, mean: [Float], sums: [Int64: [Float]]) {
+        self.generation = generation
+        self.mean = mean
+        self.sums = sums
+    }
+
+    /// The person whose centroid is closest to `vector` (and close enough), leaving out `excluded`.
+    func match(_ vector: [Float], excluding excluded: Set<Int64>) -> Int64? {
+        let face = FaceClustering.centered(vector, mean: mean)
+        var best: Int64?
+        var bestScore = FaceClustering.seedThreshold
+        for (person, sum) in sums where !excluded.contains(person) {
+            let centroid = FaceClustering.normalized(sum)
+            var score: Float = 0
+            for i in 0..<face.count { score += face[i] * centroid[i] }
+            if score >= bestScore {
+                best = person
+                bestScore = score
+            }
+        }
+        return best
+    }
+
+    func add(_ vector: [Float], to person: Int64) {
+        let face = FaceClustering.centered(vector, mean: mean)
+        var sum = sums[person] ?? [Float](repeating: 0, count: face.count)
+        for i in 0..<face.count { sum[i] += face[i] }
+        sums[person] = sum
+    }
+}
+
 extension IndexStore {
-    /// Cosine similarity at or above this links a new face to an existing person (EmbeddingGemma face crops).
-    public static let personMatchThreshold: Float = 0.72
+    /// Below this many faces the average face says little, so new faces wait for `clusterPeople` rather than being
+    /// matched one by one.
+    static let facesForMatching = 50
 
     // MARK: Schema (people + faces)
 
@@ -60,7 +99,8 @@ extension IndexStore {
         CREATE TABLE IF NOT EXISTS people(
             id INTEGER PRIMARY KEY,
             name TEXT,
-            exemplar INTEGER
+            exemplar INTEGER,
+            locked INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS faces(
             id INTEGER PRIMARY KEY,
@@ -76,44 +116,62 @@ extension IndexStore {
         CREATE INDEX IF NOT EXISTS faces_person ON faces(person);
         """
 
-    /// The face embeddings a person is recognized by. One until two people are merged, then both.
-    static let personAnchorsSQL = """
-        CREATE TABLE IF NOT EXISTS person_anchors(
-            person INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
-            face INTEGER NOT NULL REFERENCES faces(id) ON DELETE CASCADE,
-            PRIMARY KEY (person, face)
-        );
-        """
-
     // MARK: Faces
 
-    /// Drops faces for a file (re-index). People left with no faces are removed unless named.
-    /// Schema 1–5 indexes have no `faces` table yet; keyword migration requeues files before people are added.
+    /// Drops faces for a file (it can't be read any more). People left with no faces are removed unless the user named
+    /// or merged them.
     public func deleteFaces(of file: Int64) throws {
-        var ready = false
-        try db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'faces'") { _ in ready = true }
-        guard ready else { return }
-        var people: [Int64] = []
+        var people: Set<Int64> = []
         try db.query("SELECT DISTINCT person FROM faces WHERE file = ? AND person IS NOT NULL", [.int(file)]) {
-            people.append($0.int(0))
+            people.insert($0.int(0))
         }
         try db.run("DELETE FROM faces WHERE file = ?", [.int(file)])
-        for id in people { try prunePersonIfEmpty(id) }
+        let removed = db.changes
+        guard removed > 0 else { return }
+        try countFaceChanges(removed)
+        try tidy(people)
+        try bumpPeopleGeneration()
     }
 
-    /// Inserts a face and assigns it to the nearest person (or creates one). Returns the face id.
-    @discardableResult
-    public func addFace(file: Int64, box: CGRect, vector: [Float]) throws -> Int64 {
-        let person = try matchOrCreatePerson(vector: vector)
-        try db.run("""
-            INSERT INTO faces(file, x, y, w, h, person, vec) VALUES(?, ?, ?, ?, ?, ?, ?)
-            """, [.int(file), .double(box.origin.x), .double(box.origin.y), .double(box.width), .double(box.height),
-                  .int(person), .blob(Vectors.half(vector))])
-        let face = db.lastInsertID
-        try db.run("""
-            UPDATE people SET exemplar = COALESCE(exemplar, ?) WHERE id = ?
-            """, [.int(face), .int(person)])
-        return face
+    /// The faces found on `file` this time, in place of the ones found before. A face where one was before stays with
+    /// that face's person (reading the photo again keeps the names and merges); a new one goes to the closest person,
+    /// or waits for `clusterPeople`.
+    public func replaceFaces(of file: Int64, with faces: [(box: CGRect, vector: [Float])]) throws {
+        var old: [(box: CGRect, person: Int64?)] = []
+        try db.query("SELECT x, y, w, h, person FROM faces WHERE file = ?", [.int(file)]) {
+            old.append((CGRect(x: $0.double(0), y: $0.double(1), width: $0.double(2), height: $0.double(3)),
+                        $0.isNull(4) ? nil : $0.int(4)))
+        }
+        if !old.isEmpty { try db.run("DELETE FROM faces WHERE file = ?", [.int(file)]) }
+        let assigner = faces.isEmpty ? nil : try faceAssigner()
+        var onPhoto: Set<Int64> = []
+        var claimed = Set<Int>()
+        for face in faces {
+            var person: Int64?
+            if let match = old.indices.filter({ !claimed.contains($0) && old[$0].person != nil })
+                .max(by: { Self.overlap(old[$0].box, face.box) < Self.overlap(old[$1].box, face.box) }),
+               Self.overlap(old[match].box, face.box) >= 0.5 {
+                claimed.insert(match)
+                person = old[match].person
+            } else {
+                person = assigner?.match(face.vector, excluding: onPhoto)
+            }
+            if let known = person, onPhoto.contains(known) { person = nil }
+            // The app can merge people at any moment: a person that's gone leaves the face for `clusterPeople`.
+            try db.run("""
+                INSERT INTO faces(file, x, y, w, h, person, vec)
+                VALUES(?, ?, ?, ?, ?, (SELECT id FROM people WHERE id = ?), ?)
+                """, [.int(file), .double(face.box.origin.x), .double(face.box.origin.y), .double(face.box.width),
+                      .double(face.box.height), person.map { .int($0) } ?? .null, .blob(Vectors.half(face.vector))])
+            if let person {
+                onPhoto.insert(person)
+                assigner?.add(face.vector, to: person)
+                try db.run("UPDATE people SET exemplar = COALESCE(exemplar, ?) WHERE id = ?",
+                           [.int(db.lastInsertID), .int(person)])
+            }
+        }
+        try tidy(Set(old.compactMap(\.person)).subtracting(onPhoto))
+        if !faces.isEmpty || !old.isEmpty { try countFaceChanges(max(faces.count, old.count)) }
     }
 
     /// File ids that contain every listed person (AND). Empty `people` means no filter.
@@ -133,14 +191,15 @@ extension IndexStore {
 
     // MARK: People
 
+    /// Named people first, then the rest by how many photos they're on.
     public func people() throws -> [Person] {
         var out: [Person] = []
         try db.query("""
             SELECT p.id, p.name, p.exemplar,
                    (SELECT COUNT(*) FROM faces f WHERE f.person = p.id),
-                   (SELECT COUNT(DISTINCT file) FROM faces f WHERE f.person = p.id)
+                   (SELECT COUNT(DISTINCT file) FROM faces f WHERE f.person = p.id) AS photos
             FROM people p
-            ORDER BY (p.name IS NULL), lower(COALESCE(p.name, '')), p.id
+            ORDER BY (p.name IS NULL), lower(COALESCE(p.name, '')), photos DESC, p.id
             """) { row in
             out.append(Person(id: row.int(0), name: row.text(1), faceCount: Int(row.int(3)),
                               photoCount: Int(row.int(4)), exemplarFace: row.isNull(2) ? nil : row.int(2)))
@@ -148,176 +207,280 @@ extension IndexStore {
         return out
     }
 
+    /// Names a person. Named people keep their faces together, and apart from other named people, when people are
+    /// grouped again.
     public func renamePerson(_ id: Int64, to name: String?) throws {
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
-        try db.run("UPDATE people SET name = ? WHERE id = ?",
-                   [trimmed?.isEmpty == false ? .text(trimmed!) : .null, .int(id)])
-    }
-
-    /// The exemplar face: the photo path and the normalized Vision box (origin bottom-left).
-    public func exemplarFace(ofPerson id: Int64) throws -> ExemplarFace? {
-        var face: ExemplarFace?
-        try db.query("""
-            SELECT files.path, faces.x, faces.y, faces.w, faces.h FROM people
-            JOIN faces ON faces.id = people.exemplar
-            JOIN files ON files.id = faces.file
-            WHERE people.id = ?
-            """, [.int(id)]) { row in
-            guard let path = row.text(0) else { return }
-            face = ExemplarFace(path: path, box: CGRect(x: row.double(1), y: row.double(2),
-                                                        width: row.double(3), height: row.double(4)))
+        try db.transaction {
+            try db.run("UPDATE people SET name = ?, locked = 1 WHERE id = ?",
+                       [trimmed?.isEmpty == false ? .text(trimmed!) : .null, .int(id)])
+            try bumpPeopleGeneration()
         }
-        return face
     }
 
     /// Path of the photo that holds the exemplar face, for a thumbnail.
     public func exemplarPhotoPath(ofPerson id: Int64) throws -> String? {
-        var path: String?
+        try exemplarFace(ofPerson: id)?.path
+    }
+
+    /// The exemplar face: its photo and where on it (Vision's box), for a thumbnail of just the face.
+    public func exemplarFace(ofPerson id: Int64) throws -> ExemplarFace? {
+        var face: ExemplarFace?
         try db.query("""
-            SELECT files.path FROM people
-            JOIN faces ON faces.id = people.exemplar
+            SELECT files.path, faces.x, faces.y, faces.w, faces.h FROM faces
             JOIN files ON files.id = faces.file
-            WHERE people.id = ?
-            """, [.int(id)]) { path = $0.text(0) }
-        return path
-    }
-
-    /// Each person's closest other exemplar, when that cosine is at least `minimum`. Each pair once, closest first.
-    public func similarPeople(minimum: Float = 0.5, limit: Int = 24) throws -> [(first: Int64, second: Int64, score: Float)] {
-        var rows: [(id: Int64, vector: [Float])] = []
-        try db.query("""
-            SELECT p.id, f.vec FROM people p
-            JOIN faces f ON f.id = p.exemplar
-            WHERE f.vec IS NOT NULL
-            """) { row in
-            guard let blob = row.blob(1) else { return }
-            let vector = Vectors.floats(blob)
-            guard vector.count == Vectors.dimension else { return }
-            rows.append((row.int(0), vector))
+            WHERE faces.person = ?
+            ORDER BY faces.id = (SELECT exemplar FROM people WHERE id = ?) DESC, faces.id
+            LIMIT 1
+            """, [.int(id), .int(id)]) { row in
+            face = row.text(0).map {
+                ExemplarFace(path: $0, box: CGRect(x: row.double(1), y: row.double(2), width: row.double(3),
+                                                   height: row.double(4)))
+            }
         }
-        return Self.similarPairs(rows, minimum: minimum, limit: limit)
+        return face
     }
 
-    static func similarPairs(_ rows: [(id: Int64, vector: [Float])], minimum: Float = 0.5,
-                             limit: Int = 24) -> [(first: Int64, second: Int64, score: Float)] {
+    /// People who might be one person, to offer merging: each person's closest other by the average centered cosine
+    /// between their faces (`FaceClustering`), when at least `minimum`. Each pair once, closest first. Leaves out two
+    /// people on one photo, and two the user already named or merged.
+    ///
+    /// Grouping joins people at 0.22; the same person split by a look (sunglasses, a trip) is ~0.1–0.2 (2026-10-28).
+    public func similarPeople(minimum: Float = 0.08, limit: Int = 24) throws
+        -> [(first: Int64, second: Int64, score: Float)] {
+        var vectors: [[Float]] = []
+        var owners: [Int64] = []
+        var locked = Set<Int64>()
+        try db.query("SELECT f.person, f.vec, p.locked FROM faces f JOIN people p ON p.id = f.person") { row in
+            guard let blob = row.blob(1), let vector = Self.floats(half: blob) else { return }
+            vectors.append(vector)
+            owners.append(row.int(0))
+            if row.int(2) != 0 { locked.insert(row.int(0)) }
+        }
+        guard !vectors.isEmpty else { return [] }
+        let average = FaceClustering.mean(vectors)
+        var sums: [Int64: [Float]] = [:]
+        var counts: [Int64: Float] = [:]
+        for (vector, owner) in zip(vectors, owners) {
+            let face = FaceClustering.centered(vector, mean: average)
+            var sum = sums[owner] ?? [Float](repeating: 0, count: face.count)
+            for i in 0..<face.count { sum[i] += face[i] }
+            sums[owner] = sum
+            counts[owner, default: 0] += 1
+        }
+        var apart = Set<[Int64]>()
+        try db.query("""
+            SELECT DISTINCT a.person, b.person FROM faces a JOIN faces b ON a.file = b.file AND a.person < b.person
+            """) { apart.insert([$0.int(0), $0.int(1)]) }
+        for a in locked { for b in locked where a < b { apart.insert([a, b]) } }
+        // The dot product of two people's average faces is the average cosine between their faces.
+        let rows = sums.map { person, sum in (id: person, vector: sum.map { $0 / counts[person]! }) }
+        return Self.similarPairs(rows, minimum: minimum, limit: limit, apart: apart)
+    }
+
+    /// Each row's closest other row by dot product, when at least `minimum` and not `apart` ([smaller, larger] ids).
+    /// Each pair once, closest first.
+    static func similarPairs(_ rows: [(id: Int64, vector: [Float])], minimum: Float = 0.5, limit: Int = 24,
+                             apart: Set<[Int64]> = []) -> [(first: Int64, second: Int64, score: Float)] {
         var nearest: [Int64: (other: Int64, score: Float)] = [:]
         for index in rows.indices {
             for other in (index + 1)..<rows.count {
-                let score = dot(rows[index].vector, rows[other].vector)
+                let (left, right) = (rows[index].id, rows[other].id)
+                guard !apart.contains([min(left, right), max(left, right)]) else { continue }
+                var score: Float = 0
+                for i in rows[index].vector.indices { score += rows[index].vector[i] * rows[other].vector[i] }
                 guard score >= minimum else { continue }
-                let left = rows[index].id
-                let right = rows[other].id
                 if nearest[left] == nil || score > nearest[left]!.score { nearest[left] = (right, score) }
                 if nearest[right] == nil || score > nearest[right]!.score { nearest[right] = (left, score) }
             }
         }
-        var seen = Set<String>()
+        var seen = Set<[Int64]>()
         var pairs: [(first: Int64, second: Int64, score: Float)] = []
         for (id, link) in nearest {
-            let first = min(id, link.other)
-            let second = max(id, link.other)
-            guard seen.insert("\(first)-\(second)").inserted else { continue }
+            let (first, second) = (min(id, link.other), max(id, link.other))
+            guard seen.insert([first, second]).inserted else { continue }
             pairs.append((first, second, link.score))
         }
         pairs.sort { $0.score == $1.score ? $0.first < $1.first : $0.score > $1.score }
         return Array(pairs.prefix(limit))
     }
 
-    private static func dot(_ a: [Float], _ b: [Float]) -> Float {
-        guard a.count == b.count, !a.isEmpty else { return -1 }
-        var sum: Float = 0
-        for index in a.indices { sum += a[index] * b[index] }
-        return sum
-    }
-
-    /// Merges `other` into `keeper`. Both exemplar embeddings stay, and a photo matches this person when its face
-    /// is close to either one. `keeper`'s name is kept.
+    /// Merges `other` into `keeper`: all faces move, then `other` is deleted. Keeps `keeper`'s name, or takes `other`'s
+    /// when `keeper` has none. The two stay one person when people are grouped again.
     public func mergePeople(keeper: Int64, other: Int64) throws {
         guard keeper != other else { return }
         try db.transaction {
-            try rememberAnchor(of: keeper)
-            try rememberAnchor(of: other)
-            try db.run("""
-                INSERT OR IGNORE INTO person_anchors(person, face)
-                SELECT ?, face FROM person_anchors WHERE person = ?
-                """, [.int(keeper), .int(other)])
-            try db.run("DELETE FROM person_anchors WHERE person = ?", [.int(other)])
             try db.run("UPDATE faces SET person = ? WHERE person = ?", [.int(keeper), .int(other)])
             try db.run("""
-                UPDATE people SET exemplar = COALESCE(exemplar, (SELECT exemplar FROM people WHERE id = ?)) WHERE id = ?
-                """, [.int(other), .int(keeper)])
+                UPDATE people SET
+                    name = COALESCE(name, (SELECT name FROM people WHERE id = ?)),
+                    exemplar = COALESCE(exemplar, (SELECT exemplar FROM people WHERE id = ?)),
+                    locked = 1
+                WHERE id = ?
+                """, [.int(other), .int(other), .int(keeper)])
             try db.run("DELETE FROM people WHERE id = ?", [.int(other)])
+            try bumpPeopleGeneration()
         }
     }
 
-    /// The person's exemplar becomes an identity embedding, if it is not one already.
-    private func rememberAnchor(of person: Int64) throws {
-        try db.run("""
-            INSERT OR IGNORE INTO person_anchors(person, face)
-            SELECT id, exemplar FROM people WHERE id = ? AND exemplar IS NOT NULL
-            """, [.int(person)])
+    // MARK: Grouping
+
+    /// Groups every face into people again (`regroupPeople`) when a quarter of them changed since the last time (faces
+    /// added, or read again), or with `force`, when any did. Returns whether it grouped.
+    @discardableResult
+    public func clusterPeople(force: Bool = false) throws -> Bool {
+        var total = 0
+        var waiting = 0
+        try db.query("SELECT COUNT(*), COUNT(*) - COUNT(person) FROM faces") {
+            total = Int($0.int(0))
+            waiting = Int($0.int(1))
+        }
+        let changed = Int(try meta("faces_changed") ?? "") ?? 0
+        let due = force ? (changed > 0 || waiting > 0) : changed >= max(20, total / 4)
+        guard due else { return false }
+        try regroupPeople()
+        return true
+    }
+
+    /// Groups every face into people again (`FaceClustering`). Person ids stay where most of their faces stay, so names
+    /// and search filters carry over; people the user named or merged keep their faces.
+    public func regroupPeople() throws {
+        try db.transaction {
+            var ids: [Int64] = []
+            var current: [Int64?] = []
+            var faces: [FaceClustering.Face] = []
+            try db.query("""
+                SELECT f.id, f.file, f.person, f.vec, p.locked FROM faces f LEFT JOIN people p ON p.id = f.person
+                ORDER BY f.id
+                """) { row in
+                guard let blob = row.blob(3), let vector = Self.floats(half: blob) else { return }
+                let person: Int64? = row.isNull(2) ? nil : row.int(2)
+                ids.append(row.int(0))
+                current.append(person)
+                faces.append(FaceClustering.Face(file: row.int(1), vector: vector,
+                                                 pinned: row.int(4) != 0 ? person : nil))
+            }
+            let groups = FaceClustering.cluster(faces)
+            let count = (groups.max() ?? -1) + 1
+
+            // Each group keeps the person most of its faces had (a pinned group, its own), unless another group holds
+            // more of that person.
+            var personOf = [Int64?](repeating: nil, count: count)
+            for (index, face) in faces.enumerated() where face.pinned != nil { personOf[groups[index]] = face.pinned }
+            var overlap: [Int: [Int64: Int]] = [:]
+            for (index, person) in current.enumerated() {
+                if let person, personOf[groups[index]] == nil { overlap[groups[index], default: [:]][person, default: 0] += 1 }
+            }
+            var used = Set(personOf.compactMap { $0 })
+            let pairs = overlap.flatMap { group, people in people.map { (group: group, person: $0.key, faces: $0.value) } }
+                .sorted { ($0.faces, $1.group) > ($1.faces, $0.group) }
+            for pair in pairs where personOf[pair.group] == nil && !used.contains(pair.person) {
+                personOf[pair.group] = pair.person
+                used.insert(pair.person)
+            }
+            for group in 0..<count where personOf[group] == nil {
+                try db.run("INSERT INTO people(name) VALUES(NULL)")
+                personOf[group] = db.lastInsertID
+            }
+
+            for (index, id) in ids.enumerated() where current[index] != personOf[groups[index]] {
+                try db.run("UPDATE faces SET person = ? WHERE id = ?", [.int(personOf[groups[index]]!), .int(id)])
+            }
+            // The thumbnail: the face nearest its group's average.
+            let average = FaceClustering.mean(faces.map(\.vector))
+            let centered = faces.map { FaceClustering.centered($0.vector, mean: average) }
+            var sums = [[Float]](repeating: [Float](repeating: 0, count: Vectors.dimension), count: count)
+            for (index, vector) in centered.enumerated() {
+                for i in 0..<vector.count { sums[groups[index]][i] += vector[i] }
+            }
+            var exemplar = [(face: Int64, score: Float)](repeating: (-1, -.infinity), count: count)
+            for (index, vector) in centered.enumerated() {
+                let group = groups[index]
+                var score: Float = 0
+                for i in 0..<vector.count { score += vector[i] * sums[group][i] }
+                if score > exemplar[group].score { exemplar[group] = (ids[index], score) }
+            }
+            for group in 0..<count {
+                try db.run("UPDATE people SET exemplar = ? WHERE id = ?",
+                           [.int(exemplar[group].face), .int(personOf[group]!)])
+            }
+            try db.run("""
+                DELETE FROM people WHERE name IS NULL AND locked = 0
+                AND NOT EXISTS (SELECT 1 FROM faces WHERE faces.person = people.id)
+                """)
+            try setMeta("faces_changed", nil)
+            try bumpPeopleGeneration()
+        }
     }
 
     // MARK: Matching
 
-    /// Nearest person by identity embeddings, or a new person when nothing is close enough.
-    /// A merged person has both embeddings: a face matches when it is close to either one.
-    private func matchOrCreatePerson(vector: [Float]) throws -> Int64 {
-        var bestID: Int64?
-        var bestScore: Float = -1
-        var anchored = Set<Int64>()
-        func consider(_ person: Int64, _ blob: Data?) {
-            guard let blob else { return }
-            let score = cosine(vector, half: blob)
-            if score > bestScore {
-                bestScore = score
-                bestID = person
-            }
+    /// The cached `FaceAssigner`, built again when people changed (here or in another process), or nil while there
+    /// are too few faces to match against.
+    private func faceAssigner() throws -> FaceAssigner? {
+        let generation = try meta("people_gen") ?? "0"
+        if let cached = faceAssignerCache, cached.generation == generation { return cached }
+        var vectors: [[Float]] = []
+        var people: [Int64?] = []
+        try db.query("SELECT person, vec FROM faces") { row in
+            guard let blob = row.blob(1), let vector = Self.floats(half: blob) else { return }
+            vectors.append(vector)
+            people.append(row.isNull(0) ? nil : row.int(0))
         }
-        try db.query("""
-            SELECT a.person, f.vec FROM person_anchors a
-            JOIN faces f ON f.id = a.face
-            WHERE f.vec IS NOT NULL
-            """) { row in
-            anchored.insert(row.int(0))
-            consider(row.int(0), row.blob(1))
+        guard vectors.count >= Self.facesForMatching else {
+            faceAssignerCache = nil
+            return nil
         }
-        try db.query("""
-            SELECT p.id, f.vec FROM people p
-            JOIN faces f ON f.id = p.exemplar
-            WHERE f.vec IS NOT NULL
-            """) { row in
-            let person = row.int(0)
-            guard !anchored.contains(person) else { return }
-            consider(person, row.blob(1))
+        let assigner = FaceAssigner(generation: generation, mean: FaceClustering.mean(vectors), sums: [:])
+        for (vector, person) in zip(vectors, people) {
+            if let person { assigner.add(vector, to: person) }
         }
-        if let bestID, bestScore >= Self.personMatchThreshold { return bestID }
-        try db.run("INSERT INTO people(name) VALUES(NULL)")
-        return db.lastInsertID
+        faceAssignerCache = assigner
+        return assigner
     }
 
-    private func prunePersonIfEmpty(_ id: Int64) throws {
-        var faces = 0
-        var named: String?
-        try db.query("SELECT COUNT(*), (SELECT name FROM people WHERE id = ?) FROM faces WHERE person = ?",
-                     [.int(id), .int(id)]) {
-            faces = Int($0.int(0))
-            named = $0.text(1)
-        }
-        // Keep named people even with zero faces (user may re-index); drop anonymous empties.
-        if faces == 0, named == nil {
-            try db.run("DELETE FROM people WHERE id = ?", [.int(id)])
+    /// `count` faces were added, replaced or removed since people were last grouped.
+    private func countFaceChanges(_ count: Int) throws {
+        try db.run("""
+            INSERT INTO meta(key, value) VALUES('faces_changed', ?)
+            ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + excluded.value
+            """, [.text("\(count)")])
+    }
+
+    /// People changed: a `FaceAssigner` built before is out of date.
+    private func bumpPeopleGeneration() throws {
+        try db.run("""
+            INSERT INTO meta(key, value) VALUES('people_gen', '1')
+            ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1
+            """)
+    }
+
+    /// Removes the people among `people` that have no faces left, unless the user named or merged them; points the
+    /// others' thumbnails at a face they still have.
+    private func tidy(_ people: Set<Int64>) throws {
+        for id in people {
+            try db.run("""
+                DELETE FROM people WHERE id = ? AND name IS NULL AND locked = 0
+                AND NOT EXISTS (SELECT 1 FROM faces WHERE person = ?)
+                """, [.int(id), .int(id)])
+            try db.run("""
+                UPDATE people SET exemplar = (SELECT MIN(id) FROM faces WHERE person = ?)
+                WHERE id = ? AND NOT EXISTS (SELECT 1 FROM faces WHERE faces.id = people.exemplar)
+                """, [.int(id), .int(id)])
         }
     }
 
-    /// Cosine of a float32 query against a float16 blob (already L2-normalized by the model).
-    private func cosine(_ query: [Float], half: Data) -> Float {
-        guard query.count == Vectors.dimension, half.count == Vectors.dimension * 2 else { return -1 }
-        return half.withUnsafeBytes { raw -> Float in
-            guard let base = raw.bindMemory(to: Float16.self).baseAddress else { return -1 }
-            var sum: Float = 0
-            for i in 0..<Vectors.dimension { sum += query[i] * Float(base[i]) }
-            return sum
-        }
+    /// Intersection over union of two boxes.
+    static func overlap(_ a: CGRect, _ b: CGRect) -> Double {
+        let inter = a.intersection(b)
+        guard !inter.isNull, inter.width > 0, inter.height > 0 else { return 0 }
+        let shared = inter.width * inter.height
+        return shared / (a.width * a.height + b.width * b.height - shared)
+    }
+
+    /// A stored float16 vector as float32.
+    static func floats(half: Data) -> [Float]? {
+        guard half.count == Vectors.dimension * 2 else { return nil }
+        return half.withUnsafeBytes { raw in raw.bindMemory(to: Float16.self).map(Float.init) }
     }
 }

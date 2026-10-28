@@ -56,6 +56,8 @@ public final class Database {
     }
 
     public var lastInsertID: Int64 { sqlite3_last_insert_rowid(handle) }
+    /// Rows the last INSERT, UPDATE or DELETE changed.
+    public var changes: Int { Int(sqlite3_changes(handle)) }
     var errorMessage: String { String(cString: sqlite3_errmsg(handle)) }
 }
 
