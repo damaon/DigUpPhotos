@@ -473,6 +473,8 @@ struct SearchWindowView: View {
                 PersonFilters(search: search)
             }
         }
+        // Indexing groups people again as faces come in.
+        .onChange(of: model.status) { search.refreshPeople() }
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
     }

@@ -537,14 +537,22 @@ private struct FaceChip: View {
 
     private func loadFace() async {
         guard let face = await engine.exemplarFace(ofPerson: person.id),
-              let image = NSImage(contentsOf: URL(fileURLWithPath: face.path)) else { return }
-        self.image = FaceCrop.crop(image, box: face.box)
+              let image = await FaceCrop.load(face.path, box: face.box, side: 256) else { return }
+        self.image = image
     }
 }
 
 enum FaceCrop {
+    /// The face at `box` on the photo at `path`, cropped from a copy decoded only as big as the crop needs.
+    nonisolated static func load(_ path: String, box: CGRect, side: Int) async -> NSImage? {
+        await Task.detached(priority: .utility) {
+            FaceDetector.image(of: URL(fileURLWithPath: path), showing: box, side: side)
+                .map { crop(NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)), box: box) }
+        }.value
+    }
+
     /// Vision box (origin bottom-left) → a head-and-shoulders crop.
-    static func crop(_ image: NSImage, box: CGRect) -> NSImage {
+    nonisolated static func crop(_ image: NSImage, box: CGRect) -> NSImage {
         guard box.width > 0.01, box.height > 0.01,
               let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return image }
         let width = CGFloat(cg.width), height = CGFloat(cg.height)

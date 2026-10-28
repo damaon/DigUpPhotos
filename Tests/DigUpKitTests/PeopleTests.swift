@@ -247,8 +247,8 @@ import Testing
         #expect(try store.people().first?.displayName == "Anna")
     }
 
-    /// The thumbnail is the face's box (Vision's, origin bottom-left), from a downscaled copy of the photo.
-    @Test func faceThumbnailIsTheFace() throws {
+    /// A person's thumbnail decodes the photo only as big as the face needs, the right way up.
+    @Test func imageForAFaceIsOnlyAsBigAsItNeeds() throws {
         // 2000 × 1000, blue, with a red "face" low on the right: x 1200–1400, y 800–1000 from the top.
         let context = try #require(CGContext(data: nil, width: 2000, height: 1000, bitsPerComponent: 8, bytesPerRow: 0,
                                              space: CGColorSpaceCreateDeviceRGB(),
@@ -260,11 +260,11 @@ import Testing
         let url = folder.appendingPathComponent("photo.png")
         try ImageExtractor.write(try #require(context.makeImage()), to: url, png: true)
 
-        let box = CGRect(x: 0.6, y: 0, width: 0.1, height: 0.2)
-        let face = try #require(FaceDetector.thumbnail(of: url, box: box, side: 64))
-        #expect(max(face.width, face.height) >= 64 && max(face.width, face.height) <= 200)
-        let center = try pixel(face, x: face.width / 2, y: face.height / 2)
-        #expect(center.red > 200 && center.blue < 50)
+        let box = CGRect(x: 0.6, y: 0, width: 0.1, height: 0.2)   // Vision: origin bottom-left
+        let image = try #require(FaceDetector.image(of: url, showing: box, side: 64))
+        #expect(image.width == 640 && image.height == 320)       // the face's longer side: 64 px
+        let face = try pixel(image, x: Int(0.65 * Double(image.width)), y: Int(0.9 * Double(image.height)))
+        #expect(face.red > 200 && face.blue < 50)
     }
 
     // MARK: Helpers

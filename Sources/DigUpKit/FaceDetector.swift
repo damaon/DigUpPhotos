@@ -116,25 +116,25 @@ public enum FaceDetector {
         return try detect(in: image, to: folder)
     }
 
-    /// A square-ish picture of the face at `box` on the photo at `url`, at most `side` pixels: a person's thumbnail.
-    /// Decodes a downscaled copy, never the full photo.
-    public static func thumbnail(of url: URL, box: CGRect, side: Int) -> CGImage? {
+    /// The photo at `url`, decoded only as big as it takes for the face at `box` to be `side` pixels across (at most
+    /// 4096 long): for a person's thumbnail, without decoding a 48 MP photo whole.
+    public static func image(of url: URL, showing box: CGRect, side: Int) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
         else { return nil }
-        // Big enough that the face has `side` pixels across, whatever share of the photo it is.
-        let maxPixel = min(4096, Int(Double(side) / max(box.width, box.height, 0.01) * 1.5))
+        // Vision's box is in the upright photo: a rotated one (EXIF orientation 5–8) swaps width and height.
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
+        var width = Double(properties[kCGImagePropertyPixelWidth] as? Int ?? 0)
+        var height = Double(properties[kCGImagePropertyPixelHeight] as? Int ?? 0)
+        if (5...8).contains(properties[kCGImagePropertyOrientation] as? Int ?? 1) { swap(&width, &height) }
+        let face = max(box.width * width, box.height * height)
+        guard face > 0 else { return nil }
+        let maxPixel = min(4096, Int((max(width, height) * Double(side) / face).rounded()))
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixel,
             kCGImageSourceCreateThumbnailWithTransform: true,
         ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        let width = CGFloat(image.width), height = CGFloat(image.height)
-        let rect = CGRect(x: box.minX * width, y: (1 - box.maxY) * height, width: box.width * width,
-                          height: box.height * height)
-            .insetBy(dx: -box.width * width * 0.2, dy: -box.height * height * 0.2)
-            .intersection(CGRect(x: 0, y: 0, width: width, height: height))
-        return image.cropping(to: rect.integral)
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
     /// Crops `box` (Vision coords) with `pad` relative margin, scaled to at most `maxPixel`.

@@ -642,8 +642,8 @@ private struct PersonThumb: View {
         .clipShape(Circle())
         .task(id: personID) {
             guard let face = await engine.exemplarFace(ofPerson: personID),
-                  let source = NSImage(contentsOf: URL(fileURLWithPath: face.path)) else { return }
-            image = FaceCrop.crop(source, box: face.box)
+                  let crop = await FaceCrop.load(face.path, box: face.box, side: Int(side * 2)) else { return }
+            image = crop
         }
     }
 }
