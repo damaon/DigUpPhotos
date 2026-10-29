@@ -47,8 +47,8 @@ public enum ModelFiles {
     }
 
     /// `file` in the Hugging Face cache, when it's there at the right size (its checksum is for the caller to check).
-    public static func cachedCopy(of file: File) -> URL? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
+    public static func cachedCopy(of file: File,
+                                  home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL? {
         let candidates = [
             huggingFaceSnapshot.appendingPathComponent(file.name),
             home.appendingPathComponent("Library/Application Support/DigUp/Models/\(file.name)"),

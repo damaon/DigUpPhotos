@@ -134,11 +134,19 @@ public final class IndexStore {
     /// Schema 6 → 7: embeddings kept by file SHA-256, so re-reading a photo for a new score does not run the model.
     /// Nothing is queued. Vectors already stored are copied into the cache the next time the helper starts.
     private func migrateEmbeddingCache() throws {
+        if try !hasColumn("files", "sha") { try db.execute("ALTER TABLE files ADD COLUMN sha TEXT") }
         try db.execute("""
-            ALTER TABLE files ADD COLUMN sha TEXT;
             \(EmbeddingCache.tableSQL)
             PRAGMA user_version = 7;
             """)
+    }
+
+    /// A migration may find what it adds already there: tables created by a later schema (`peopleTablesSQL`) or an
+    /// index written by a newer build and given an older version number.
+    private func hasColumn(_ table: String, _ column: String) throws -> Bool {
+        var found = false
+        try db.query("PRAGMA table_info(\(table))") { if $0.text(1) == column { found = true } }
+        return found
     }
 
     /// Schema 5 → 6: people and faces for filtering photos by who is in them.
@@ -155,9 +163,7 @@ public final class IndexStore {
     /// person's); everyone else's faces are grouped again from scratch. (New face crops come with
     /// `FaceDetector.version`.)
     private func migratePeopleLocked() throws {
-        var columns: Set<String> = []
-        try db.query("PRAGMA table_info(people)") { if let name = $0.text(1) { columns.insert(name) } }
-        if !columns.contains("locked") {
+        if try !hasColumn("people", "locked") {
             try db.execute("ALTER TABLE people ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
         }
         try db.execute("CREATE TEMP TABLE seen_faces(face INTEGER PRIMARY KEY)")
@@ -186,9 +192,7 @@ public final class IndexStore {
     /// ~580 faces where there are ~300, 2026-10-29). Coming from 7, the faces left with a person are the seen ones;
     /// from 8, the thumbnail is the face we know was seen.
     private func migratePinnedFaces(wasLocked: Bool) throws {
-        var columns: Set<String> = []
-        try db.query("PRAGMA table_info(faces)") { if let name = $0.text(1) { columns.insert(name) } }
-        if !columns.contains("pinned") {
+        if try !hasColumn("faces", "pinned") {
             try db.execute("ALTER TABLE faces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
         }
         try db.execute(Self.peopleTablesSQL)   // people_apart

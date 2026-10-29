@@ -230,7 +230,7 @@ final class SearchModel {
     /// The grid's columns right now (↑ ↓ move by a row).
     var columns = 4
     @ObservationIgnored weak var field: NSTextField?
-    @ObservationIgnored private let engine: Engine
+    @ObservationIgnored let engine: Engine
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var task: Task<Void, Never>?
 
@@ -565,6 +565,22 @@ struct SearchWindowView: View {
 private struct PersonFilters: View {
     @Bindable var search: SearchModel
 
+    /// Named people, people on 5 or more photos, and whoever is selected, up to 16; the rest are in a menu. Faces
+    /// grouped into people include passers-by (2026-10-29: 13 of 58 on fewer than 5 photos).
+    private var shown: [Person] {
+        let chips = Set(search.people.filter(Self.worthAChip).prefix(16).map(\.id)).union(search.peopleFilter)
+        return search.people.filter { chips.contains($0.id) }
+    }
+
+    private var more: [Person] {
+        let visible = Set(shown.map(\.id))
+        return search.people.filter { !visible.contains($0.id) }
+    }
+
+    private static func worthAChip(_ person: Person) -> Bool {
+        person.name?.isEmpty == false || person.photoCount >= 5
+    }
+
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
@@ -572,25 +588,37 @@ private struct PersonFilters: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                     .padding(.trailing, 2)
-                ForEach(search.people.prefix(24)) { person in
+                ForEach(shown) { person in
                     let on = search.peopleFilter.contains(person.id)
                     Button {
                         search.togglePerson(person.id)
                     } label: {
                         HStack(spacing: 5) {
-                            Image(systemName: "person.fill")
-                                .font(.system(size: 10))
+                            PersonThumb(personID: person.id, engine: search.engine, side: 20)
                             Text(person.displayName)
                                 .lineLimit(1)
                         }
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(on ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
+                        .padding(.leading, 3)
+                        .padding(.trailing, 10)
+                        .padding(.vertical, 3)
                         .background(on ? Color.accentColor : Color.primary.opacity(0.06), in: Capsule())
                     }
                     .buttonStyle(.plain)
                     .help(person.photoCount == 1 ? "1 photo" : "\(person.photoCount) photos")
+                }
+                if !more.isEmpty {
+                    Menu("\(more.count) more") {
+                        ForEach(more) { person in
+                            Button("\(person.displayName) · \(person.photoCount)") { search.togglePerson(person.id) }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
                 }
                 if !search.peopleFilter.isEmpty {
                     Button("Clear") { search.peopleFilter = [] }

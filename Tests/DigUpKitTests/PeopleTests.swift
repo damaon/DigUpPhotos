@@ -3,12 +3,16 @@ import Foundation
 import Testing
 @testable import DigUpKit
 
-@Suite struct PeopleTests {
+@Suite final class PeopleTests {
     let folder: URL = {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("DigUpPeople-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }()
+
+    deinit {
+        try? FileManager.default.removeItem(at: folder)
+    }
 
     // MARK: Grouping (no database)
 

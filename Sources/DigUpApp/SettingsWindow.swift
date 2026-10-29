@@ -676,7 +676,8 @@ private struct PeopleSettings: View {
 }
 
 /// Face crop of a person's exemplar photo.
-private struct PersonThumb: View {
+/// A person's face, cropped from the photo of their thumbnail face.
+struct PersonThumb: View {
     let personID: Int64
     let engine: Engine
     var side: CGFloat = 36

@@ -2,12 +2,16 @@ import Foundation
 import Testing
 @testable import DigUpKit
 
-@Suite struct FolderSelectionTests {
+@Suite final class FolderSelectionTests {
     let folder: URL = {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("DigUpTests-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return URL(fileURLWithPath: String(cString: realpath(url.path, nil)))   // /private/var/…, as crawls report it
     }()
+
+    deinit {
+        try? FileManager.default.removeItem(at: folder)
+    }
 
     @Test func uncheckingASubfolderSkipsIt() {
         var selection = FolderSelection(chosen: ["/D"])

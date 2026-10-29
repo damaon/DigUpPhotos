@@ -254,7 +254,7 @@ public final class Searcher {
                                   locEnd: locEnd,
                                   excerpt: snippet ?? storedExcerpt, modified: modified, size: size, info: info))
         }
-        return hits
+        return PhotoCopies.one(hits, path: \.path, isPhoto: { $0.kind == .image })
     }
 
     /// Codes and IDs ("K7Q2LM", "TRX50") and long numbers ("4815162342": an order, a phone number) mean nothing to an

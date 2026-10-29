@@ -3,12 +3,16 @@ import Foundation
 import Testing
 @testable import DigUpKit
 
-@Suite struct IndexStoreTests {
+@Suite final class IndexStoreTests {
     let folder: URL = {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("DigUpTests-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }()
+
+    deinit {
+        try? FileManager.default.removeItem(at: folder)
+    }
 
     func file(_ path: String, inode: UInt64) -> Candidate {
         Candidate(path: path, kind: .image, size: 10, mtime: 1, inode: inode, device: 1)
@@ -137,10 +141,11 @@ import Testing
                                                    withDestinationURL: blob)
         setenv("HF_HUB_CACHE", hub.path, 1)
         defer { unsetenv("HF_HUB_CACHE") }
-        #expect(ModelFiles.cachedCopy(of: ModelFiles.text)?.lastPathComponent == "2188ac1d")
-        #expect(ModelFiles.cachedCopy(of: ModelFiles.media) == nil)   // not there
+        // A home of its own: this Mac's real ~/Library may hold the models.
+        #expect(ModelFiles.cachedCopy(of: ModelFiles.text, home: folder)?.lastPathComponent == "2188ac1d")
+        #expect(ModelFiles.cachedCopy(of: ModelFiles.media, home: folder) == nil)   // not there
         try FileHandle(forWritingTo: blob).truncate(atOffset: 10)
-        #expect(ModelFiles.cachedCopy(of: ModelFiles.text) == nil)    // not whole
+        #expect(ModelFiles.cachedCopy(of: ModelFiles.text, home: folder) == nil)    // not whole
     }
 
     @Test func syncKeepsTheRowsOfAFolderThatWentAway() throws {
