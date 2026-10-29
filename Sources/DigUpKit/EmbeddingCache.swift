@@ -8,9 +8,6 @@ import Foundation
 /// of the same photo share one embedding. A new quality score does not. A new model does: those vectors can't be
 /// compared with the old ones, so that stamp misses and the model runs.
 enum EmbeddingCache {
-    /// Face crops are not their own files. They're stored under the photo's hash, with the box in `slot`.
-    static let faceKind = "face"
-
     static let tableSQL = """
         CREATE TABLE IF NOT EXISTS embedding_cache(
             sha TEXT NOT NULL,
@@ -38,10 +35,6 @@ enum EmbeddingCache {
         return String(format: "%.4f", loc)
     }
 
-    static func faceSlot(_ box: CGRect) -> String {
-        String(format: "f%d:%.4f,%.4f,%.4f,%.4f", FaceDetector.version,
-               box.origin.x, box.origin.y, box.width, box.height)
-    }
 }
 
 extension IndexStore {
@@ -83,7 +76,6 @@ extension IndexStore {
             SELECT \(Self.fileColumns) FROM files AS f
             WHERE (
                 EXISTS (SELECT 1 FROM segments s WHERE s.file = f.id AND s.vec IS NOT NULL AND s.kind != 'name')
-                OR EXISTS (SELECT 1 FROM faces fc WHERE fc.file = f.id AND fc.vec IS NOT NULL)
             )
             AND NOT EXISTS (SELECT 1 FROM embedding_cache c WHERE c.sha = f.sha AND c.stamp = ?)
             """, [.text(stamp)]) { out.append(Self.record($0)) }
@@ -102,11 +94,6 @@ extension IndexStore {
             guard let kind = row.text(0), let blob = row.blob(2), !blob.isEmpty else { return }
             let loc = row.isNull(1) ? nil : row.double(1)
             rows.append(Row(kind: kind, slot: EmbeddingCache.slot(kind: kind, loc: loc, imageBudget: imageBudget), vec: blob))
-        }
-        try db.query("SELECT x, y, w, h, vec FROM faces WHERE file = ?", [.int(file.id)]) { row in
-            guard let blob = row.blob(4), !blob.isEmpty else { return }
-            let box = CGRect(x: row.double(0), y: row.double(1), width: row.double(2), height: row.double(3))
-            rows.append(Row(kind: EmbeddingCache.faceKind, slot: EmbeddingCache.faceSlot(box), vec: blob))
         }
         try db.transaction {
             for row in rows {

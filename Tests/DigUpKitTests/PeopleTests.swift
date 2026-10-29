@@ -16,8 +16,8 @@ import Testing
 
     // MARK: Grouping (no database)
 
-    /// Faces as EmbeddingGemma gives them: everyone shares most of the vector (raw cosine ~0.8 between anyone), so
-    /// only what's left after the average face tells people apart.
+    /// Faces that share most of the vector (raw cosine ~0.8 between anyone, as EmbeddingGemma's did): only what's left
+    /// after the average face tells people apart.
     @Test func groupsPeopleThatOnlyDifferAfterTheAverageFace() {
         var faces = Faces()
         let people = (0..<4).flatMap { person in (0..<12).map { _ in faces.add(person: person) } }
@@ -284,13 +284,11 @@ import Testing
         #expect(try person(store, file: crowd[24]) != anna)
     }
 
-    /// Two people merged by hand can still be one person: they're suggested. Two names are two people.
-    @Test func mergedPeopleAreStillSuggested() throws {
-        let store = try IndexStore(directory: folder)
+    /// Anna in two halves, each a person the user merged (one look at a time, as with the model before).
+    private func annaInTwoMergedHalves(_ store: IndexStore) throws -> (crowd: [Int64], anna: Int64, annaToo: Int64) {
         var faces = Faces()
         let crowd = try addCrowd(store, &faces)
         try store.clusterPeople(force: true)
-        // Anna in two halves, each one a person the user merged: grouping keeps them apart.
         let anna = try person(store, file: crowd[0])
         try store.db.run("INSERT INTO people(name, locked) VALUES(NULL, 1)")
         let annaToo = store.db.lastInsertID
@@ -299,12 +297,37 @@ import Testing
             UPDATE people SET locked = 1 WHERE id = \(anna);
             UPDATE faces SET pinned = 1 WHERE file IN (\(crowd[0]), \(crowd[6]));
             """)
+        return (crowd, anna, annaToo)
+    }
+
+    /// Two merged people with faces this close are one person: grouping brings them together.
+    @Test func mergedHalvesOfOnePersonComeTogether() throws {
+        let store = try IndexStore(directory: folder)
+        let (crowd, anna, annaToo) = try annaInTwoMergedHalves(store)
+        try store.renamePerson(annaToo, to: "Anna")
         try store.regroupPeople()
-        #expect(try person(store, file: crowd[0]) == anna && person(store, file: crowd[6]) == annaToo)
-        #expect(try store.similarPeople().contains { Set([$0.first, $0.second]) == [anna, annaToo] })
-        try store.renamePerson(anna, to: "Anna")
-        try store.renamePerson(annaToo, to: "Hanna")
-        #expect(try !store.similarPeople().contains { Set([$0.first, $0.second]) == [anna, annaToo] })
+        #expect(try person(store, file: crowd[0]) == annaToo)   // the one with the name stays
+        #expect(try person(store, file: crowd[6]) == annaToo)
+        #expect(try person(store, file: crowd[12]) != annaToo)
+        #expect(try store.people().allSatisfy { $0.id != anna })
+    }
+
+    /// Two names are two people, and so is a pair the user turned down: grouping keeps them apart and doesn't suggest
+    /// them.
+    @Test func namesAndTurnedDownPairsStayApart() throws {
+        for turnDown in [false, true] {
+            let store = try IndexStore(directory: folder.appendingPathComponent("\(turnDown)"))
+            let (crowd, anna, annaToo) = try annaInTwoMergedHalves(store)
+            if turnDown {
+                try store.dismissSuggestion(anna, annaToo)
+            } else {
+                try store.renamePerson(anna, to: "Anna")
+                try store.renamePerson(annaToo, to: "Hanna")
+            }
+            try store.regroupPeople()
+            #expect(try person(store, file: crowd[0]) == anna && person(store, file: crowd[6]) == annaToo)
+            #expect(try !store.similarPeople().contains { Set([$0.first, $0.second]) == [anna, annaToo] })
+        }
     }
 
     /// A suggestion turned down stays away until the user asks to see them all again.
@@ -425,7 +448,8 @@ import Testing
     private func box(_ slot: Int) -> CGRect { CGRect(x: 0.1 + 0.4 * Double(slot), y: 0.2, width: 0.3, height: 0.3) }
 }
 
-/// Made-up face vectors shaped like EmbeddingGemma's: a big part every face shares, a part per person, and noise.
+/// Made-up face vectors, harder than `FaceIdentity`'s: a big part every face shares (as in EmbeddingGemma's), a part
+/// per person, and noise.
 private struct Faces {
     var random = Seeded(seed: 7)
     var list: [FaceClustering.Face] = []
@@ -441,11 +465,11 @@ private struct Faces {
         while people.count <= person { people.append(direction()) }
         let noise = direction()
         let own = people[person], common = shared
-        return FaceClustering.normalized((0..<Vectors.dimension).map { 0.9 * common[$0] + 0.38 * own[$0] + 0.22 * noise[$0] })
+        return FaceClustering.normalized((0..<FaceIdentity.dimension).map { 0.9 * common[$0] + 0.38 * own[$0] + 0.22 * noise[$0] })
     }
 
     private mutating func direction() -> [Float] {
-        FaceClustering.normalized((0..<Vectors.dimension).map { _ in Float.random(in: -1...1, using: &random) })
+        FaceClustering.normalized((0..<FaceIdentity.dimension).map { _ in Float.random(in: -1...1, using: &random) })
     }
 
     static func dot(_ a: [Float], _ b: [Float]) -> Float { zip(a, b).reduce(0) { $0 + $1.0 * $1.1 } }

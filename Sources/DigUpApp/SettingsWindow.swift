@@ -656,10 +656,10 @@ private struct PeopleSettings: View {
         return a.id <= b.id ? (a, b) : (b, a)
     }
 
+    /// Suggested pairs are ones grouping didn't join (under 0.22): even the closest are a guess (of the 10 closest at
+    /// 0.20–0.22, 2 were plainly one person, `FaceIdentity`, 2026-10-30).
     private func similarity(_ score: Float) -> String {
-        if score >= 0.72 { return "Same face" }
-        if score >= 0.6 { return "Very similar" }
-        return "Similar"
+        score >= 0.18 ? "Very similar" : "Similar"
     }
 
     private func person(_ id: Int64) -> Person? { state.people.first { $0.id == id } }

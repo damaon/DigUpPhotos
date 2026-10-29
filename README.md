@@ -105,13 +105,14 @@ index, and a test checks every llama.cpp update against stored reference vectors
 
 ## Build from source
 
-You'll need Xcode 26, git, and CMake (or `uv`) for llama.cpp. If `xcode-select -p` shows the Command Line Tools,
+You'll need Xcode 26, git, CMake (or `uv`) for llama.cpp, and `uv` for the face model's one-time conversion. If `xcode-select -p` shows the Command Line Tools,
 switch to Xcode first (`sudo xcode-select -s /Applications/Xcode.app`): they lack the SwiftUI and Swift Testing
 macros the build needs.
 
 ```sh
 git clone https://github.com/ARahim3/DigUp && cd DigUp
 scripts/build-llama.sh            # llama.cpp at a pinned tag, with a one-line patch (a few minutes)
+scripts/build-sface.sh            # the face-recognition model, converted to Core ML (a minute; without it, no people)
 swift build -c release && swift test
 ./build.sh                        # → build.noindex/DigUp.app
 ```

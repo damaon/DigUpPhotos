@@ -39,7 +39,7 @@ public struct ExemplarFace: Sendable, Equatable {
     }
 }
 
-/// One detected face on a photo, with its EmbeddingGemma vector and optional person link.
+/// One detected face on a photo, with its identity vector (`FaceIdentity`) and optional person link.
 public struct FaceRecord: Sendable {
     public let id: Int64
     public let file: Int64
@@ -266,7 +266,7 @@ extension IndexStore {
     /// between their faces (`FaceClustering`), when at least `minimum`. Each pair once, closest first. Leaves out two
     /// people on one photo, two the user gave names, and pairs turned down.
     ///
-    /// Grouping joins people at 0.22; the same person split by a look (sunglasses, a trip) is ~0.1–0.2 (2026-10-28).
+    /// Grouping joins people at 0.22, so a pair offered here is one grouping didn't join.
     public func similarPeople(minimum: Float = 0.08, limit: Int = 24) throws
         -> [(first: Int64, second: Int64, score: Float)] {
         var vectors: [[Float]] = []
@@ -405,9 +405,15 @@ extension IndexStore {
 
     /// Groups every face into people again (`FaceClustering`). Person ids stay where most of their faces stay, so names
     /// and search filters carry over; people the user named or merged keep the faces they saw (`pinShownFace`), and
-    /// whatever is like those.
+    /// whatever is like those. Two of those people become one when their faces are close, unless both have names or
+    /// the user turned the pair down: merges made by hand, one look at a time, come together (one man was four merged
+    /// people, 2026-10-30). The one with a name stays.
     public func regroupPeople() throws {
         try db.transaction {
+            var named = Set<Int64>()
+            try db.query("SELECT id FROM people WHERE name IS NOT NULL AND name != ''") { named.insert($0.int(0)) }
+            var turnedDown = Set<[Int64]>()
+            try db.query("SELECT a, b FROM people_apart") { turnedDown.insert([$0.int(0), $0.int(1)]) }
             var ids: [Int64] = []
             var current: [Int64?] = []
             var faces: [FaceClustering.Face] = []
@@ -423,13 +429,23 @@ extension IndexStore {
                 faces.append(FaceClustering.Face(file: row.int(1), vector: vector,
                                                  pinned: row.int(4) != 0 ? person : nil))
             }
-            let groups = FaceClustering.cluster(faces)
+            let groups = FaceClustering.cluster(faces) { a, b in
+                (named.contains(a) && named.contains(b)) || turnedDown.contains([min(a, b), max(a, b)])
+            }
             let count = (groups.max() ?? -1) + 1
 
-            // Each group keeps the person most of its faces had (a pinned group, its own), unless another group holds
-            // more of that person.
+            // A pinned group is its person's (the named one, else the one with most of its pinned faces). Every other
+            // group keeps the person most of its faces had, unless another group holds more of that person.
             var personOf = [Int64?](repeating: nil, count: count)
-            for (index, face) in faces.enumerated() where face.pinned != nil { personOf[groups[index]] = face.pinned }
+            var pinnedIn: [Int: [Int64: Int]] = [:]
+            for (index, face) in faces.enumerated() {
+                if let person = face.pinned { pinnedIn[groups[index], default: [:]][person, default: 0] += 1 }
+            }
+            for (group, people) in pinnedIn {
+                personOf[group] = people.max {
+                    (named.contains($0.key) ? 1 : 0, $0.value, -$0.key) < (named.contains($1.key) ? 1 : 0, $1.value, -$1.key)
+                }?.key
+            }
             var overlap: [Int: [Int64: Int]] = [:]
             for (index, person) in current.enumerated() {
                 if let person, personOf[groups[index]] == nil { overlap[groups[index], default: [:]][person, default: 0] += 1 }
@@ -452,7 +468,7 @@ extension IndexStore {
             // The thumbnail: the face nearest its group's average.
             let average = FaceClustering.mean(faces.map(\.vector))
             let centered = faces.map { FaceClustering.centered($0.vector, mean: average) }
-            var sums = [[Float]](repeating: [Float](repeating: 0, count: Vectors.dimension), count: count)
+            var sums = [[Float]](repeating: [Float](repeating: 0, count: FaceIdentity.dimension), count: count)
             for (index, vector) in centered.enumerated() {
                 for i in 0..<vector.count { sums[groups[index]][i] += vector[i] }
             }
@@ -467,8 +483,9 @@ extension IndexStore {
                 try db.run("UPDATE people SET exemplar = ? WHERE id = ?",
                            [.int(exemplar[group].face), .int(personOf[group]!)])
             }
+            // Left with no faces: grouped into someone else. A name stays, faces or not.
             try db.run("""
-                DELETE FROM people WHERE name IS NULL AND locked = 0
+                DELETE FROM people WHERE (name IS NULL OR name = '')
                 AND NOT EXISTS (SELECT 1 FROM faces WHERE faces.person = people.id)
                 """)
             try setMeta("faces_changed", nil)
@@ -541,9 +558,10 @@ extension IndexStore {
         return shared / (a.width * a.height + b.width * b.height - shared)
     }
 
-    /// A stored float16 vector as float32.
+    /// A stored float16 face vector as float32; nil for one from an older face model (EmbeddingGemma's, before
+    /// `FaceDetector.version` 3), which waits for its photo to be read again.
     static func floats(half: Data) -> [Float]? {
-        guard half.count == Vectors.dimension * 2 else { return nil }
+        guard half.count == FaceIdentity.dimension * 2 else { return nil }
         return half.withUnsafeBytes { raw in raw.bindMemory(to: Float16.self).map(Float.init) }
     }
 }

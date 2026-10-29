@@ -23,6 +23,8 @@ fi
 
 # llama.cpp, the embedding runtime, linked into the helper (only rebuilt when its tag or patch changes).
 scripts/build-llama.sh
+# SFace, the face-recognition model, compiled for Core ML (only rebuilt when its source or the conversion changes).
+scripts/build-sface.sh
 
 # Both executables: the app, and the `digup` CLI, which the app runs as its indexing helper and query encoder.
 swift build -c release --product DigUpApp
@@ -45,6 +47,8 @@ xcrun actool --compile "$APP/Contents/Resources" --platform macosx --target-devi
   --development-region en "$PWD/Resources/AppIcon/AppIcon.icon" > /dev/null
 cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"   # over actool's plainer fallback: ours has simplified 16 and 32 px
 cp Resources/Acknowledgements.txt "$APP/Contents/Resources/Acknowledgements.txt"
+# The helper finds it at ../Resources (`FaceIdentity.modelURL`).
+cp -R Vendor/sface/SFace.mlmodelc "$APP/Contents/Resources/SFace.mlmodelc"
 
 # Sparkle (in-app updates): the framework in Frameworks/, where the app's runpath looks. Its XPC services are for
 # sandboxed apps and its headers for building against it: left out.

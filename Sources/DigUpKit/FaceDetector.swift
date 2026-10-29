@@ -5,24 +5,22 @@ import ImageIO
 import UniformTypeIdentifiers
 import Vision
 
-/// A face found in a photo: normalized Vision box and a cropped JPEG for the embedding model.
+/// A face found in a photo: normalized Vision box and who it is (`FaceIdentity`).
 public struct DetectedFace: Sendable {
     /// Vision bounding box (normalized, origin bottom-left).
     public let box: CGRect
-    /// Path to a square-ish JPEG crop written for EmbeddingGemma.
-    public let path: String
+    /// SFace's 128 numbers, unit length.
+    public let vector: [Float]
 }
 
 public enum FaceDetector {
     /// Bump when face crops change. Photo embeddings stay; only photos that have faces are read again
     /// (`IndexStore.reread`), so a change in which faces are found needs a `PhotoQuality.version` bump too.
     /// 2: crops from a bigger copy of the photo, less margin, 140 tokens (2026-10-28).
-    static let version = 2
+    /// 3: a face-recognition model (`FaceIdentity`) instead of EmbeddingGemma (2026-10-30).
+    static let version = 3
     /// Most faces worth naming: the biggest ones on a crowd photo are kept.
     static let maxFaces = 12
-    /// Soft tokens for a face crop. 140 rather than 70 tells people apart better (fewer mixed-up people, 2026-10-28)
-    /// for twice the time per face.
-    public static let embedBudget = 140
 
     /// Face rectangles, largest first. Runs on the CPU: the Neural Engine compiler can stay busy for hours,
     /// and a request that waits on it never returns, so indexing never starts.
@@ -68,32 +66,31 @@ public enum FaceDetector {
         return smile(in: image)
     }
 
-    /// Margin around Vision's box, relative to its size. Less background, hair and hats in the crop means fewer people
-    /// grouped by where they were rather than who they are (2026-10-28, `cropSide`).
-    static let cropPad: CGFloat = 0.10
-    /// Pixels across a face crop. Crops come from a copy of the photo big enough to have them, not from the index's
-    /// 1024-pixel one: a face that's 2% of a group photo is ~100 pixels there.
-    static let cropSide = 384
+    /// Pixels across a face when it's lined up for `FaceIdentity`, which takes 112: from a copy of the photo big enough
+    /// to have them, not from the index's 1024-pixel one, where a face that's 2% of a group photo is ~100 pixels.
+    static let faceSide: CGFloat = 224
 
-    /// Detects faces in `image` and writes padded crops into `folder`. Tiny detections are dropped. With `source` (the
-    /// photo `image` was made from), crops come from a bigger copy of it when the faces are small in `image`.
-    static func detect(in image: CGImage, source: CGImageSource? = nil, to folder: URL) throws -> [DetectedFace] {
+    /// Detects faces in `image` and tells who each one is. Tiny detections are dropped, and so is every face when
+    /// there's no face model (`FaceIdentity.isAvailable`). With `source` (the photo `image` was made from), faces are
+    /// read from a bigger copy of it when they're small in `image`.
+    static func detect(in image: CGImage, source: CGImageSource? = nil) -> [DetectedFace] {
+        guard FaceIdentity.isAvailable else { return [] }
         // Skip dust / false positives (under ~1.2% of the frame).
         let boxes = observations(in: image).prefix(maxFaces).map(\.boundingBox).filter { $0.width * $0.height >= 0.012 }
         guard !boxes.isEmpty else { return [] }
         let large = source.flatMap { larger(image, from: $0, for: boxes) } ?? image
-        return try boxes.map { box in
-            DetectedFace(box: box, path: try crop(large, box: box, pad: cropPad, maxPixel: cropSide, to: folder).path)
+        return zip(boxes, FaceIdentity.vectors(in: large, boxes: boxes)).compactMap { box, vector in
+            vector.map { DetectedFace(box: box, vector: $0) }
         }
     }
 
-    /// A copy of the photo in which the smallest of `boxes` is `cropSide` pixels across (at most 4096 pixels long),
+    /// A copy of the photo in which the smallest of `boxes` is `faceSide` pixels across (at most 4096 pixels long),
     /// or nil when `image` already is one.
     private static func larger(_ image: CGImage, from source: CGImageSource, for boxes: [CGRect]) -> CGImage? {
         let longest = CGFloat(max(image.width, image.height))
         let smallest = boxes.map { max($0.width * CGFloat(image.width), $0.height * CGFloat(image.height)) }.min() ?? 0
         guard smallest > 0 else { return nil }
-        let wanted = min(4096, longest * CGFloat(cropSide) / (smallest * (1 + 2 * cropPad)))
+        let wanted = min(4096, longest * faceSide / smallest)
         guard wanted > longest * 1.1 else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -103,8 +100,8 @@ public enum FaceDetector {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
-    /// Loads the photo (or its index thumbnail) and detects faces into `folder`.
-    static func detect(url: URL, maxPixel: Int = 1536, to folder: URL) throws -> [DetectedFace] {
+    /// Loads the photo (or its index thumbnail) and detects faces.
+    static func detect(url: URL, maxPixel: Int = 1536) -> [DetectedFace] {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
         else { return [] }
         let options: [CFString: Any] = [
@@ -114,7 +111,7 @@ public enum FaceDetector {
             kCGImageSourceShouldCacheImmediately: true,
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return [] }
-        return try detect(in: image, to: folder)
+        return detect(in: image)
     }
 
     /// The photo at `url`, decoded only as big as it takes for the face at `box` to be `side` pixels across (at most
@@ -136,44 +133,5 @@ public enum FaceDetector {
             kCGImageSourceCreateThumbnailWithTransform: true,
         ]
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
-    }
-
-    /// Crops `box` (Vision coords) with `pad` relative margin, scaled to at most `maxPixel`.
-    private static func crop(_ image: CGImage, box: CGRect, pad: CGFloat, maxPixel: Int, to folder: URL) throws
-        -> URL {
-        let width = CGFloat(image.width), height = CGFloat(image.height)
-        // Vision: origin bottom-left → CoreGraphics top-left.
-        var rect = CGRect(x: box.minX * width,
-                          y: (1 - box.maxY) * height,
-                          width: box.width * width,
-                          height: box.height * height)
-        let padX = rect.width * pad, padY = rect.height * pad
-        rect = rect.insetBy(dx: -padX, dy: -padY)
-        rect = rect.intersection(CGRect(x: 0, y: 0, width: width, height: height))
-        guard rect.width >= 16, rect.height >= 16,
-              let cropped = image.cropping(to: rect.integral) else {
-            throw ExtractError.unreadable("can't crop face")
-        }
-        // Downscale large face crops so the model stays cheap.
-        let outImage: CGImage
-        if max(cropped.width, cropped.height) > maxPixel {
-            let scale = Double(maxPixel) / Double(max(cropped.width, cropped.height))
-            let w = max(1, Int(Double(cropped.width) * scale))
-            let h = max(1, Int(Double(cropped.height) * scale))
-            guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
-                                          bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-                                          bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
-                throw ExtractError.unreadable("can't scale face")
-            }
-            context.interpolationQuality = .high
-            context.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))
-            guard let scaled = context.makeImage() else { throw ExtractError.unreadable("can't scale face") }
-            outImage = scaled
-        } else {
-            outImage = cropped
-        }
-        let out = folder.appendingPathComponent(UUID().uuidString + ".jpg")
-        try ImageExtractor.write(outImage, to: out, png: false)
-        return out
     }
 }

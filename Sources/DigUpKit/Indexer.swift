@@ -597,20 +597,6 @@ public final class Indexer {
             try fullWorker().embedImages(paths, budget: budget)
         }
         let vectors = picture.embeddings
-        var shaForSlot: [Int: String] = [:]
-        for (item, sha) in zip(ready, shas) { shaForSlot[item.slot] = sha }
-        // Face crops: one batch so the model stays warm. Assignment to people happens inside `replaceFaces`.
-        // The crop's vector is cached under the photo's hash, so the same face isn't embedded again.
-        let faceJobs: [(slot: Int, face: DetectedFace)] = ready.flatMap { item in
-            item.image.faces.map { (item.slot, $0) }
-        }
-        // Faces are extra: if they can't be embedded, the photos still are.
-        let faceVectors = faceJobs.isEmpty ? [] : (try? cachedEmbeddings(faceJobs.map { job in
-            Memorized(sha: shaForSlot[job.slot] ?? "", kind: EmbeddingCache.faceKind,
-                      slot: EmbeddingCache.faceSlot(job.face.box), value: job.face.path)
-        }) { paths in
-            try fullWorker().embedImages(paths, budget: FaceDetector.embedBudget)
-        }.embeddings) ?? []
         try store.db.transaction {
             for (position, item) in ready.enumerated() {
                 let file = batch[item.slot]
@@ -627,8 +613,8 @@ public final class Indexer {
                     try store.addSegment(file: file.id, kind: .ocr, modality: .text, excerpt: excerpt(item.ocr),
                                          text: item.ocr)
                 }
-                let found = faceJobs.indices.filter { faceJobs[$0].slot == item.slot && $0 < faceVectors.count }
-                    .compactMap { index in faceVectors[index].vector.map { (box: faceJobs[index].face.box, vector: $0) } }
+                // Who each face is came with reading the photo (`FaceIdentity`); people are matched in `replaceFaces`.
+                let found = item.image.faces.map { (box: $0.box, vector: $0.vector) }
                 try store.replaceFaces(of: file.id, with: found)
                 let faces = found.count
                 var info = ["width": "\(item.image.width)", "height": "\(item.image.height)"]
@@ -654,7 +640,7 @@ public final class Indexer {
             }
         }
         // People are grouped again as faces add up (each time a quarter more); the rest once indexing is idle.
-        if !faceJobs.isEmpty { try store.clusterPeople() }
+        if ready.contains(where: { !$0.image.faces.isEmpty }) { try store.clusterPeople() }
     }
 
     /// Pages `read` of a PDF (all of a short one, a step of a long one). A long one stays `partial` with `read_to` and

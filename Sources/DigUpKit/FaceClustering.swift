@@ -3,9 +3,10 @@ import Foundation
 
 /// Groups face vectors into people.
 ///
-/// EmbeddingGemma isn't a face-recognition model: any two face crops score ~0.78 cosine, and two different people on
-/// the same photo ~0.83 (median, 1,452 faces, 2026-10-28), so a fixed threshold on raw cosine either joins everyone or
-/// no one. Taking the average face away first (`centered`) puts the same faces at ~0.8 and different people at ~0.2.
+/// The vectors are `FaceIdentity`'s. Taking the average face away first (`centered`) leaves what tells people apart:
+/// two people on one photo go from 0.11 to -0.08 (median), one person's faces from 0.66 to 0.42, and grouping mixes
+/// people less (1.7% of held-out pairs from one photo vs 2.1% raw, 1,455 faces, 2026-10-30). It was what made
+/// EmbeddingGemma's face vectors usable at all (any two faces ~0.78 raw), the model before.
 ///
 /// Then average linkage: two groups join when their faces are, on average, close enough. Every face counts, not one
 /// exemplar, and the order photos were indexed in doesn't matter. Two faces on one photo are never the same person.
@@ -17,7 +18,7 @@ enum FaceClustering {
         /// As the model gave it (L2-normalized).
         let vector: [Float]
         /// The person the user named or merged this face into: their faces end up together (two merged looks stay two
-        /// groups until then, each drawing faces like it), and apart from every other such person.
+        /// groups until then, each drawing faces like it), and apart from the people `cluster`'s `apart` says.
         let pinned: Int64?
     }
 
@@ -27,8 +28,8 @@ enum FaceClustering {
     static let linkThreshold: Float = 0.22
 
     static func mean(_ vectors: [[Float]]) -> [Float] {
-        var sum = [Float](repeating: 0, count: Vectors.dimension)
-        for vector in vectors where vector.count == Vectors.dimension { vDSP_vadd(sum, 1, vector, 1, &sum, 1, vDSP_Length(sum.count)) }
+        var sum = [Float](repeating: 0, count: FaceIdentity.dimension)
+        for vector in vectors where vector.count == FaceIdentity.dimension { vDSP_vadd(sum, 1, vector, 1, &sum, 1, vDSP_Length(sum.count)) }
         guard !vectors.isEmpty else { return sum }
         return sum.map { $0 / Float(vectors.count) }
     }
@@ -48,16 +49,19 @@ enum FaceClustering {
         return vector.map { $0 / norm }
     }
 
-    /// A group index for every face (0..<groups, in order of first appearance).
-    static func cluster(_ faces: [Face], threshold: Float = linkThreshold) -> [Int] {
+    /// A group index for every face (0..<groups, in order of first appearance). Two pinned people end up in one group
+    /// when their faces are close enough, unless `apart` (two people with names, or a pair the user turned down); by
+    /// default no two pinned people do.
+    static func cluster(_ faces: [Face], threshold: Float = linkThreshold,
+                        apart: @escaping (Int64, Int64) -> Bool = { $0 != $1 }) -> [Int] {
         guard !faces.isEmpty else { return [] }
-        let d = Vectors.dimension
+        let d = FaceIdentity.dimension
         let average = mean(faces.map(\.vector))
         let vectors = faces.map { centered($0.vector, mean: average) }
 
         // Pass 1: the user's people first, then every other face, each into the nearest group close enough to its
         // centroid (a pinned face only into its own person's), or a group of its own.
-        var groups = Groups(dimension: d)
+        var groups = Groups(dimension: d, apart: apart)
         var groupOf = [Int](repeating: -1, count: faces.count)
         let order = faces.indices.filter { faces[$0].pinned != nil } + faces.indices.filter { faces[$0].pinned == nil }
         for index in order {
@@ -75,11 +79,12 @@ enum FaceClustering {
             groupOf[index] = best
         }
 
-        // Pass 2: average linkage between groups; then each pinned person's groups are one.
+        // Pass 2: average linkage between groups; then each pinned person's groups are one (people joined in pass 2
+        // are one person).
         var survivor = groups.link(threshold: threshold)
         var personRoot: [Int64: Int] = [:]
         for group in survivor.indices {
-            guard let pinned = groups.pinned[survivor[group]] else { continue }
+            guard let pinned = groups.pinned[survivor[group]].map(groups.person) else { continue }
             if let root = personRoot[pinned] { survivor[group] = root } else { personRoot[pinned] = survivor[group] }
         }
         var renumber: [Int: Int] = [:]
@@ -102,8 +107,34 @@ private struct Groups {
     var files: [Set<Int64>] = []
     var pinned: [Int64?] = []
     var count: Int { sizes.count }
+    /// Pinned people joined into one, and who's in each: two are apart when any of theirs are.
+    let apart: (Int64, Int64) -> Bool
+    private var joinedInto: [Int64: Int64] = [:]
+    private var together: [Int64: Set<Int64>] = [:]
 
-    init(dimension: Int) { self.dimension = dimension }
+    init(dimension: Int, apart: @escaping (Int64, Int64) -> Bool) {
+        self.dimension = dimension
+        self.apart = apart
+    }
+
+    /// The person `id` is part of now.
+    func person(_ id: Int64) -> Int64 {
+        var id = id
+        while let next = joinedInto[id] { id = next }
+        return id
+    }
+
+    private func peopleApart(_ a: Int64?, _ b: Int64?) -> Bool {
+        guard let a = a.map(person), let b = b.map(person), a != b else { return false }
+        let left = together[a] ?? [a], right = together[b] ?? [b]
+        return left.contains { x in right.contains { y in apart(x, y) } }
+    }
+
+    private mutating func join(_ a: Int64?, _ b: Int64?) {
+        guard let a = a.map(person), let b = b.map(person), a != b else { return }
+        joinedInto[b] = a
+        together[a] = (together[a] ?? [a]).union(together[b] ?? [b])
+    }
 
     mutating func add(pinned person: Int64?) -> Int {
         sums += [Float](repeating: 0, count: dimension)
@@ -162,6 +193,7 @@ private struct Groups {
             for i in 0..<dimension { sums[startA + i] += sums[startB + i] }
             sizes[a] += sizes[b]
             files[a].formUnion(files[b])
+            join(pinned[a], pinned[b])
             pinned[a] = pinned[a] ?? pinned[b]
             alive[b] = false
             parent[b] = a
@@ -171,7 +203,7 @@ private struct Groups {
             }
             for c in 0..<m {
                 let blocked = !alive[c] || c == a || link[a * m + c] == -.infinity || link[b * m + c] == -.infinity
-                    || Self.apart(pinned[a], pinned[c])
+                    || peopleApart(pinned[a], pinned[c])
                 let value = blocked ? -Float.infinity : row[c] / (sizes[a] * sizes[c])
                 link[a * m + c] = value
                 link[c * m + a] = value
@@ -195,13 +227,7 @@ private struct Groups {
     }
 
     private func conflict(_ a: Int, _ b: Int) -> Bool {
-        Self.apart(pinned[a], pinned[b]) || !files[a].isDisjoint(with: files[b])
-    }
-
-    /// Two people the user told apart.
-    private static func apart(_ a: Int64?, _ b: Int64?) -> Bool {
-        if let a, let b { return a != b }
-        return false
+        peopleApart(pinned[a], pinned[b]) || !files[a].isDisjoint(with: files[b])
     }
 
     private func bestOf(_ g: Int, link: [Float], alive: [Bool], m: Int) -> (group: Int, score: Float) {
