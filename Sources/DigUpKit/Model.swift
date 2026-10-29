@@ -96,13 +96,16 @@ struct IndexStamp: Equatable, Sendable {
     var vectors: String
     var quality: Int?
     var faces: Int?
+    /// `kinds:…`, when the index takes only some kinds.
+    var kinds: String?
 
     static func parse(_ fingerprint: String) -> IndexStamp {
         let parts = fingerprint.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
         let model = parts.count == 2 ? parts[0].trimmingCharacters(in: .whitespacesAndNewlines) : ""
         var tokens = (parts.count == 2 ? parts[1] : Substring(fingerprint))
             .split(whereSeparator: \.isWhitespace).map(String.init)
-        if tokens.first?.hasPrefix("kinds:") == true { tokens.removeFirst() }
+        var kinds: String?
+        if tokens.first?.hasPrefix("kinds:") == true { kinds = tokens.removeFirst() }
         var quality: Int?
         var faces: Int?
         while let last = tokens.last {
@@ -110,7 +113,8 @@ struct IndexStamp: Equatable, Sendable {
             if let number = Self.mark(last, prefix: "f") { faces = number; tokens.removeLast(); continue }
             break
         }
-        return IndexStamp(model: model, vectors: tokens.joined(separator: " "), quality: quality, faces: faces)
+        return IndexStamp(model: model, vectors: tokens.joined(separator: " "), quality: quality, faces: faces,
+                          kinds: kinds)
     }
 
     /// Same embedding model and the same budgets. A quality or face bump does not make old vectors unusable.

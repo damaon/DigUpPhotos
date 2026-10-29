@@ -295,13 +295,18 @@ public final class Indexer {
     private func adopt(_ fingerprint: String) throws {
         guard let indexed = try store.meta("fingerprint"), indexed != fingerprint else { return }
         guard let resetOnModelChange else { throw IndexerError.fingerprintMismatch(index: indexed, now: fingerprint) }
-        let reuse = IndexStamp.parse(indexed).sameEmbeddings(as: IndexStamp.parse(fingerprint))
+        let (was, now) = (IndexStamp.parse(indexed), IndexStamp.parse(fingerprint))
+        let reuse = was.sameEmbeddings(as: now)
         if !reuse {
-            let stamp = IndexStamp.parse(fingerprint)
-            try store.discardEmbeddingCache(except: "\(stamp.model) | \(stamp.vectors)")
+            try store.discardEmbeddingCache(except: "\(now.model) | \(now.vectors)")
         }
-        // Files are queued again. Embeddings for bytes we've already seen come back from the cache.
-        try store.resetAll()
+        if reuse, was.kinds == now.kinds, let quality = was.quality, let faces = was.faces {
+            // Only photo quality or faces changed: just the photos those touch, and search keeps working meanwhile.
+            try store.reread(quality: quality != now.quality, faces: faces != now.faces)
+        } else {
+            // Files are queued again. Embeddings for bytes we've already seen come back from the cache.
+            try store.resetAll()
+        }
         try store.setMeta("fingerprint", fingerprint)
         resetOnModelChange(indexed, fingerprint, reuse)
     }
@@ -532,6 +537,8 @@ public final class Indexer {
             return [try stopReading(batch[0], at: step.lowerBound, because: outcome.detail ?? outcome.state)]
         }
         var results = [(String, String?)](repeating: ("failed", nil), count: batch.count)
+        // A file read again (`IndexStore.reread`) kept what it had until now.
+        if !later { for file in batch { try store.clearSegments(of: file.id) } }
         for (slot, outcome) in prepared.outcomes {
             if batch[slot].kind == .image { try store.deleteFaces(of: batch[slot].id) }
             try store.finish(batch[slot].id, state: outcome.state, detail: outcome.detail)

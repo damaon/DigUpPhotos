@@ -616,6 +616,36 @@ nonisolated final class Engine: @unchecked Sendable {
         }
     }
 
+    /// Runs a change to people on the search queue, where the app's store lives.
+    private func changePeople(_ change: @escaping (IndexStore) throws -> Void) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            searchQueue.async { [self] in
+                if let searchStore { try? change(searchStore) }
+                continuation.resume()
+            }
+        }
+    }
+
+    func dismissSuggestion(_ first: Int64, _ second: Int64) async {
+        await changePeople { try $0.dismissSuggestion(first, second) }
+    }
+
+    func restoreSuggestions() async {
+        await changePeople { try $0.restoreSuggestions() }
+    }
+
+    func undoMerges() async {
+        await changePeople { try $0.undoMerges() }
+    }
+
+    func dismissedSuggestionCount() async -> Int {
+        await withCheckedContinuation { continuation in
+            searchQueue.async { [self] in
+                continuation.resume(returning: (try? searchStore?.dismissedSuggestionCount()) ?? 0)
+            }
+        }
+    }
+
     /// People whose exemplar faces are close enough that they may be the same person, closest first.
     func similarPeople() async -> [(first: Int64, second: Int64, score: Float)] {
         await withCheckedContinuation { continuation in

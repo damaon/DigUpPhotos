@@ -107,6 +107,46 @@ import Testing
         #expect(try person(store, file: later) == anna)   // matched as it's indexed, before any regrouping
     }
 
+    /// A named person holds the face the user saw, not every face grouping once gave them: someone else's faces put
+    /// with them earlier go back to being someone else.
+    @Test func namedPeopleLetGoOfFacesGivenThemByMistake() throws {
+        let store = try IndexStore(directory: folder)
+        var faces = Faces()
+        let crowd = try addCrowd(store, &faces)
+        try store.clusterPeople(force: true)
+        let anna = try person(store, file: crowd[0]), bob = try person(store, file: crowd[12])
+        try store.renamePerson(anna, to: "Anna")
+        try store.db.run("UPDATE faces SET person = ? WHERE person = ?", [.int(anna), .int(bob)])
+        try store.regroupPeople()
+        #expect(try person(store, file: crowd[0]) == anna)
+        #expect(try person(store, file: crowd[12]) != anna)
+        #expect(try Set(crowd[12..<24].map { try person(store, file: $0) }).count == 1)
+    }
+
+    /// An index from before `faces.pinned`, where a named person had come to hold someone else too.
+    @Test func olderIndexesLetGoToo() throws {
+        var faces = Faces()
+        let crowd: [Int64]
+        let anna: Int64
+        do {
+            let store = try IndexStore(directory: folder)
+            crowd = try addCrowd(store, &faces)
+            try store.clusterPeople(force: true)
+            anna = try person(store, file: crowd[0])
+            let bob = try person(store, file: crowd[12])
+            try store.db.execute("""
+                UPDATE people SET name = 'Anna', locked = 1 WHERE id = \(anna);
+                UPDATE faces SET person = \(anna) WHERE person = \(bob);
+                ALTER TABLE faces DROP COLUMN pinned;
+                PRAGMA user_version = 8;
+                """)
+        }
+        let store = try IndexStore(directory: folder)
+        #expect(try store.clusterPeople(force: true))
+        #expect(try person(store, file: crowd[0]) == anna)
+        #expect(try person(store, file: crowd[12]) != anna)
+    }
+
     /// Reading a photo again (it changed, or everything is re-embedded) keeps each face's person.
     @Test func readingAPhotoAgainKeepsItsPeople() throws {
         let store = try IndexStore(directory: folder)
@@ -222,6 +262,82 @@ import Testing
         try store.regroupPeople()
         for file in later { #expect(try person(store, file: file) == keeper) }
         #expect(try person(store, file: crowd[24]) != keeper)
+    }
+
+    /// A merge regroups at once: the rest of the merged look's person comes along, without waiting for indexing.
+    @Test func mergeGroupsAgainAtOnce() throws {
+        let store = try IndexStore(directory: folder)
+        var faces = Faces()
+        let crowd = try addCrowd(store, &faces)
+        try store.clusterPeople(force: true)
+        let anna = try person(store, file: crowd[0]), bob = try person(store, file: crowd[12])
+        // Bob split in two, the way a look the model sees as someone else would be.
+        try store.db.run("INSERT INTO people(name) VALUES(NULL)")
+        let bobToo = store.db.lastInsertID
+        for file in crowd[18..<24] { try store.db.run("UPDATE faces SET person = ? WHERE file = ?", [.int(bobToo), .int(file)]) }
+        try store.mergePeople(keeper: anna, other: bob)
+        for file in crowd[12..<24] { #expect(try person(store, file: file) == anna) }
+        #expect(try person(store, file: crowd[24]) != anna)
+    }
+
+    /// Two people merged by hand can still be one person: they're suggested. Two names are two people.
+    @Test func mergedPeopleAreStillSuggested() throws {
+        let store = try IndexStore(directory: folder)
+        var faces = Faces()
+        let crowd = try addCrowd(store, &faces)
+        try store.clusterPeople(force: true)
+        // Anna in two halves, each one a person the user merged: grouping keeps them apart.
+        let anna = try person(store, file: crowd[0])
+        try store.db.run("INSERT INTO people(name, locked) VALUES(NULL, 1)")
+        let annaToo = store.db.lastInsertID
+        try store.db.execute("""
+            UPDATE faces SET person = \(annaToo) WHERE file IN (\(crowd[6..<12].map(String.init).joined(separator: ",")));
+            UPDATE people SET locked = 1 WHERE id = \(anna);
+            UPDATE faces SET pinned = 1 WHERE file IN (\(crowd[0]), \(crowd[6]));
+            """)
+        try store.regroupPeople()
+        #expect(try person(store, file: crowd[0]) == anna && person(store, file: crowd[6]) == annaToo)
+        #expect(try store.similarPeople().contains { Set([$0.first, $0.second]) == [anna, annaToo] })
+        try store.renamePerson(anna, to: "Anna")
+        try store.renamePerson(annaToo, to: "Hanna")
+        #expect(try !store.similarPeople().contains { Set([$0.first, $0.second]) == [anna, annaToo] })
+    }
+
+    /// A suggestion turned down stays away until the user asks to see them all again.
+    @Test func dismissedSuggestionsStayAway() throws {
+        let store = try IndexStore(directory: folder)
+        var faces = Faces()
+        let crowd = try addCrowd(store, &faces)
+        try store.clusterPeople(force: true)
+        let anna = try person(store, file: crowd[0])
+        try store.db.run("INSERT INTO people(name) VALUES(NULL)")
+        let annaToo = store.db.lastInsertID
+        for file in crowd[6..<12] { try store.db.run("UPDATE faces SET person = ? WHERE file = ?", [.int(annaToo), .int(file)]) }
+        let pair: Set<Int64> = [anna, annaToo]
+        #expect(try store.similarPeople().contains { Set([$0.first, $0.second]) == pair })
+        try store.dismissSuggestion(annaToo, anna)
+        #expect(try !store.similarPeople().contains { Set([$0.first, $0.second]) == pair })
+        #expect(try store.dismissedSuggestionCount() == 1)
+        try store.restoreSuggestions()
+        #expect(try store.similarPeople().contains { Set([$0.first, $0.second]) == pair })
+        #expect(try store.dismissedSuggestionCount() == 0)
+    }
+
+    /// Undoing merges splits what the user joined, and keeps names.
+    @Test func undoMergesSplitsThemAgain() throws {
+        let store = try IndexStore(directory: folder)
+        var faces = Faces()
+        let crowd = try addCrowd(store, &faces)
+        try store.clusterPeople(force: true)
+        let a = try person(store, file: crowd[0]), b = try person(store, file: crowd[12])
+        let c = try person(store, file: crowd[24])
+        try store.renamePerson(c, to: "Cleo")
+        try store.mergePeople(keeper: a, other: b)
+        #expect(try person(store, file: crowd[12]) == a)
+        try store.undoMerges()
+        #expect(try person(store, file: crowd[0]) != person(store, file: crowd[12]))
+        #expect(try person(store, file: crowd[24]) == c)
+        #expect(try store.people().first { $0.id == c }?.name == "Cleo")
     }
 
     @Test func mergeKeepsEitherName() throws {

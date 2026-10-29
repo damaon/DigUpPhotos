@@ -14,7 +14,8 @@ public struct DetectedFace: Sendable {
 }
 
 public enum FaceDetector {
-    /// Bump when face crops change. Photo embeddings stay; only the face rows are redone.
+    /// Bump when face crops change. Photo embeddings stay; only photos that have faces are read again
+    /// (`IndexStore.reread`), so a change in which faces are found needs a `PhotoQuality.version` bump too.
     /// 2: crops from a bigger copy of the photo, less margin, 140 tokens (2026-10-28).
     static let version = 2
     /// Most faces worth naming: the biggest ones on a crowd photo are kept.

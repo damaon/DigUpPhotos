@@ -20,7 +20,7 @@ public struct FileRecord: Sendable {
 public final class IndexStore {
     public let directory: URL
     public let db: Database
-    static let schemaVersion: Int64 = 8
+    static let schemaVersion: Int64 = 9
 
     /// Keyword search's tokenizer. Marks (M*) count as letters, so Bengali vowel signs and Arabic harakat stay inside
     /// their words: by default SQLite splits on them ("কলকাতায়" became "কলক", "ত", "য").
@@ -90,6 +90,7 @@ public final class IndexStore {
             if (1...5).contains(version) { try migratePeople() }
             if (1...6).contains(version) { try migrateEmbeddingCache() }
             if (1...7).contains(version) { try migratePeopleLocked() }
+            if (1...8).contains(version) { try migratePinnedFaces(wasLocked: version == 8) }
         }
     }
 
@@ -178,6 +179,24 @@ public final class IndexStore {
             DROP TABLE temp.seen_faces;
             PRAGMA user_version = 8;
             """)
+    }
+
+    /// Schema 8 → 9: merge suggestions can be turned down (`people_apart`), and a named or merged person holds only
+    /// the faces the user saw as them (`faces.pinned`), not every face grouping ever gave them: those held on to all of it and took in more at each grouping (two people of
+    /// ~580 faces where there are ~300, 2026-10-29). Coming from 7, the faces left with a person are the seen ones;
+    /// from 8, the thumbnail is the face we know was seen.
+    private func migratePinnedFaces(wasLocked: Bool) throws {
+        var columns: Set<String> = []
+        try db.query("PRAGMA table_info(faces)") { if let name = $0.text(1) { columns.insert(name) } }
+        if !columns.contains("pinned") {
+            try db.execute("ALTER TABLE faces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+        }
+        try db.execute(Self.peopleTablesSQL)   // people_apart
+        try db.execute(wasLocked ? """
+            UPDATE faces SET pinned = 1 WHERE id IN (SELECT exemplar FROM people WHERE locked = 1);
+            INSERT OR REPLACE INTO meta(key, value) VALUES('faces_changed', '1');
+            """ : "UPDATE faces SET pinned = 1 WHERE person IS NOT NULL;")
+        try db.execute("PRAGMA user_version = 9")
     }
 
     /// Schema 1 → 2: keyword search with whole Bengali and Arabic words (`tokenizer`) over normalized text
@@ -354,6 +373,24 @@ public final class IndexStore {
             try db.run("UPDATE files SET state = 'pending', detail = NULL, info = NULL, indexed_at = NULL")
             try setMeta("fingerprint", nil)
         }
+    }
+
+    /// Queues photos again to redo their quality (every photo) or their faces (photos with faces), with the same
+    /// embeddings. Unlike `resetAll`, what they have stays searchable until each is read again (`clearSegments`).
+    @discardableResult
+    public func reread(quality: Bool, faces: Bool) throws -> Int {
+        guard quality || faces else { return 0 }
+        let which = quality ? "" : " AND id IN (SELECT file FROM faces)"
+        try db.run("""
+            UPDATE files SET state = 'pending', detail = NULL, indexed_at = NULL
+            WHERE kind = 'image' AND state != 'pending'\(which)
+            """)
+        return db.changes
+    }
+
+    /// What a file had from its last reading, dropped as it's read again.
+    func clearSegments(of file: Int64) throws {
+        try deleteSegments(of: file, keepingName: true)
     }
 
     /// Files waiting to be embedded, in indexing order; `only` narrows it to some files (just-added ones).

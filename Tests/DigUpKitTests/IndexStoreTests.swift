@@ -51,7 +51,7 @@ import Testing
         #expect(try store.pendingCount() == 1)
         var imageVectors = 0
         try store.db.query("SELECT COUNT(vec) FROM segments WHERE kind = 'image'") { imageVectors = Int($0.int(0)) }
-        #expect(imageVectors == 0)
+        #expect(imageVectors == 1)   // still searchable until it is read again
         let stamp = "\(source) | \(options.vectorFingerprint)"
         let again = try store.cachedEmbedding(sha: ModelFiles.sha256(of: url), stamp: stamp, kind: "image",
                                               slot: EmbeddingCache.imageSlot(budget: options.photoBudget))

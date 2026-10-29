@@ -148,6 +148,13 @@ final class SettingsState {
         app.searchWindow?.search.refreshPeople()
     }
 
+    func undoMerges() async {
+        await app.engine.undoMerges()
+        people = await app.engine.people()
+        app.albumsWindow?.albums.refreshPeople()
+        app.searchWindow?.search.refreshPeople()
+    }
+
     /// The index changed: refresh the folder counts, at most every 2 s while files are being indexed.
     func statusChanged() {
         guard !refreshPending else { return }
@@ -442,6 +449,9 @@ private struct PeopleSettings: View {
     @State private var mergeKeeper: Int64?
     @State private var pending: PendingMerge?
     @State private var suggestions: [(first: Int64, second: Int64, score: Float)] = []
+    /// Suggestions turned down with "Not the same", which the menu can bring back.
+    @State private var dismissed = 0
+    @State private var confirmingUndo = false
 
     private struct Suggestion: Identifiable {
         var first: Int64
@@ -491,7 +501,11 @@ private struct PeopleSettings: View {
                     personRow(person)
                 }
             } header: {
-                Text("People in your photos")
+                HStack {
+                    Text("People in your photos")
+                    Spacer()
+                    peopleMenu
+                }
             } footer: {
                 Text("A name is saved with Return. Merge when the same person was split into two. In search, several "
                      + "selected people keep only photos where all of them appear. Albums turns the people you pick into trips.")
@@ -512,7 +526,15 @@ private struct PeopleSettings: View {
             syncDrafts(people)
         }
         .task(id: state.people.map(\.id)) {
-            suggestions = await state.app.engine.similarPeople()
+            await loadSuggestions()
+        }
+        .confirmationDialog("Undo all merges?", isPresented: $confirmingUndo, titleVisibility: .visible) {
+            Button("Undo Merges", role: .destructive) {
+                Task { await state.undoMerges() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Faces are grouped again as if nothing had been merged. Names stay.")
         }
         .confirmationDialog(pending.map { "Merge \($0.other.displayName) into \($0.keeper.displayName)?" } ?? "Merge?",
                             isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
@@ -551,9 +573,43 @@ private struct PeopleSettings: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
+            Button("Not the Same") {
+                Task {
+                    await state.app.engine.dismissSuggestion(keeper.id, other.id)
+                    await loadSuggestions()
+                }
+            }
+            .controlSize(.small)
+            .help("Stop suggesting these two")
             Button("Merge") { pending = PendingMerge(keeper: keeper, other: other) }
                 .controlSize(.small)
         }
+    }
+
+    /// Rarely needed, so out of the way: bring back turned-down suggestions, or take back every merge.
+    private var peopleMenu: some View {
+        Menu {
+            Button(dismissed == 1 ? "Show 1 Dismissed Suggestion" : "Show \(dismissed) Dismissed Suggestions") {
+                Task {
+                    await state.app.engine.restoreSuggestions()
+                    await loadSuggestions()
+                }
+            }
+            .disabled(dismissed == 0)
+            Divider()
+            Button("Undo All Merges…", role: .destructive) { confirmingUndo = true }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("More")
+    }
+
+    private func loadSuggestions() async {
+        suggestions = await state.app.engine.similarPeople()
+        dismissed = await state.app.engine.dismissedSuggestionCount()
     }
 
     private func personRow(_ person: Person) -> some View {

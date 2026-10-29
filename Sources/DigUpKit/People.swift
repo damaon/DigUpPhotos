@@ -110,7 +110,14 @@ extension IndexStore {
             w REAL NOT NULL,
             h REAL NOT NULL,
             person INTEGER REFERENCES people(id) ON DELETE SET NULL,
-            vec BLOB NOT NULL
+            vec BLOB NOT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0   -- the user saw this face as this person (named or merged them)
+        );
+        -- Suggestions the user turned down: not the same person (`dismissSuggestion`).
+        CREATE TABLE IF NOT EXISTS people_apart(
+            a INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+            b INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+            PRIMARY KEY (a, b)
         );
         CREATE INDEX IF NOT EXISTS faces_file ON faces(file);
         CREATE INDEX IF NOT EXISTS faces_person ON faces(person);
@@ -137,10 +144,10 @@ extension IndexStore {
     /// that face's person (reading the photo again keeps the names and merges); a new one goes to the closest person,
     /// or waits for `clusterPeople`.
     public func replaceFaces(of file: Int64, with faces: [(box: CGRect, vector: [Float])]) throws {
-        var old: [(box: CGRect, person: Int64?)] = []
-        try db.query("SELECT x, y, w, h, person FROM faces WHERE file = ?", [.int(file)]) {
+        var old: [(box: CGRect, person: Int64?, pinned: Bool)] = []
+        try db.query("SELECT x, y, w, h, person, pinned FROM faces WHERE file = ?", [.int(file)]) {
             old.append((CGRect(x: $0.double(0), y: $0.double(1), width: $0.double(2), height: $0.double(3)),
-                        $0.isNull(4) ? nil : $0.int(4)))
+                        $0.isNull(4) ? nil : $0.int(4), $0.int(5) != 0))
         }
         if !old.isEmpty { try db.run("DELETE FROM faces WHERE file = ?", [.int(file)]) }
         let assigner = faces.isEmpty ? nil : try faceAssigner()
@@ -148,21 +155,24 @@ extension IndexStore {
         var claimed = Set<Int>()
         for face in faces {
             var person: Int64?
+            var pinned = false
             if let match = old.indices.filter({ !claimed.contains($0) && old[$0].person != nil })
                 .max(by: { Self.overlap(old[$0].box, face.box) < Self.overlap(old[$1].box, face.box) }),
                Self.overlap(old[match].box, face.box) >= 0.5 {
                 claimed.insert(match)
                 person = old[match].person
+                pinned = old[match].pinned
             } else {
                 person = assigner?.match(face.vector, excluding: onPhoto)
             }
-            if let known = person, onPhoto.contains(known) { person = nil }
+            if let known = person, onPhoto.contains(known) { (person, pinned) = (nil, false) }
             // The app can merge people at any moment: a person that's gone leaves the face for `clusterPeople`.
             try db.run("""
-                INSERT INTO faces(file, x, y, w, h, person, vec)
-                VALUES(?, ?, ?, ?, ?, (SELECT id FROM people WHERE id = ?), ?)
+                INSERT INTO faces(file, x, y, w, h, person, vec, pinned)
+                VALUES(?, ?, ?, ?, ?, (SELECT id FROM people WHERE id = ?), ?, ?)
                 """, [.int(file), .double(face.box.origin.x), .double(face.box.origin.y), .double(face.box.width),
-                      .double(face.box.height), person.map { .int($0) } ?? .null, .blob(Vectors.half(face.vector))])
+                      .double(face.box.height), person.map { .int($0) } ?? .null, .blob(Vectors.half(face.vector)),
+                      .int(pinned ? 1 : 0)])
             if let person {
                 onPhoto.insert(person)
                 assigner?.add(face.vector, to: person)
@@ -207,15 +217,26 @@ extension IndexStore {
         return out
     }
 
-    /// Names a person. Named people keep their faces together, and apart from other named people, when people are
-    /// grouped again.
+    /// Names a person. The face on their thumbnail stays theirs, and they stay apart from other named people, when
+    /// people are grouped again.
     public func renamePerson(_ id: Int64, to name: String?) throws {
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
         try db.transaction {
             try db.run("UPDATE people SET name = ?, locked = 1 WHERE id = ?",
                        [trimmed?.isEmpty == false ? .text(trimmed!) : .null, .int(id)])
+            try pinShownFace(of: id)
             try bumpPeopleGeneration()
         }
+    }
+
+    /// The face on the person's thumbnail (`exemplarFace`) is one the user has seen as them: grouping keeps it theirs.
+    /// Only such faces are held: every face of the person would hold whatever grouping once put with them, for good.
+    private func pinShownFace(of id: Int64) throws {
+        try db.run("""
+            UPDATE faces SET pinned = 1 WHERE id = (
+                SELECT id FROM faces WHERE person = ?
+                ORDER BY id = (SELECT exemplar FROM people WHERE id = ?) DESC, id LIMIT 1)
+            """, [.int(id), .int(id)])
     }
 
     /// Path of the photo that holds the exemplar face, for a thumbnail.
@@ -243,19 +264,19 @@ extension IndexStore {
 
     /// People who might be one person, to offer merging: each person's closest other by the average centered cosine
     /// between their faces (`FaceClustering`), when at least `minimum`. Each pair once, closest first. Leaves out two
-    /// people on one photo, and two the user already named or merged.
+    /// people on one photo, two the user gave names, and pairs turned down.
     ///
     /// Grouping joins people at 0.22; the same person split by a look (sunglasses, a trip) is ~0.1–0.2 (2026-10-28).
     public func similarPeople(minimum: Float = 0.08, limit: Int = 24) throws
         -> [(first: Int64, second: Int64, score: Float)] {
         var vectors: [[Float]] = []
         var owners: [Int64] = []
-        var locked = Set<Int64>()
-        try db.query("SELECT f.person, f.vec, p.locked FROM faces f JOIN people p ON p.id = f.person") { row in
+        var named = Set<Int64>()
+        try db.query("SELECT f.person, f.vec, p.name FROM faces f JOIN people p ON p.id = f.person") { row in
             guard let blob = row.blob(1), let vector = Self.floats(half: blob) else { return }
             vectors.append(vector)
             owners.append(row.int(0))
-            if row.int(2) != 0 { locked.insert(row.int(0)) }
+            if row.text(2)?.isEmpty == false { named.insert(row.int(0)) }
         }
         guard !vectors.isEmpty else { return [] }
         let average = FaceClustering.mean(vectors)
@@ -272,7 +293,9 @@ extension IndexStore {
         try db.query("""
             SELECT DISTINCT a.person, b.person FROM faces a JOIN faces b ON a.file = b.file AND a.person < b.person
             """) { apart.insert([$0.int(0), $0.int(1)]) }
-        for a in locked { for b in locked where a < b { apart.insert([a, b]) } }
+        try db.query("SELECT a, b FROM people_apart") { apart.insert([$0.int(0), $0.int(1)]) }
+        // Two names are two people. A merged person without one can still be the same as another.
+        for a in named { for b in named where a < b { apart.insert([a, b]) } }
         // The dot product of two people's average faces is the average cosine between their faces.
         let rows = sums.map { person, sum in (id: person, vector: sum.map { $0 / counts[person]! }) }
         return Self.similarPairs(rows, minimum: minimum, limit: limit, apart: apart)
@@ -306,10 +329,13 @@ extension IndexStore {
     }
 
     /// Merges `other` into `keeper`: all faces move, then `other` is deleted. Keeps `keeper`'s name, or takes `other`'s
-    /// when `keeper` has none. The two stay one person when people are grouped again.
+    /// when `keeper` has none. The two faces the user saw stay one person when people are grouped again, each drawing
+    /// the faces like it.
     public func mergePeople(keeper: Int64, other: Int64) throws {
         guard keeper != other else { return }
         try db.transaction {
+            try pinShownFace(of: keeper)
+            try pinShownFace(of: other)
             try db.run("UPDATE faces SET person = ? WHERE person = ?", [.int(keeper), .int(other)])
             try db.run("""
                 UPDATE people SET
@@ -321,6 +347,41 @@ extension IndexStore {
             try db.run("DELETE FROM people WHERE id = ?", [.int(other)])
             try bumpPeopleGeneration()
         }
+        // Faces like either look join them now, not at the next grouping (under a second for ~1,500 faces).
+        try regroupPeople()
+    }
+
+    /// The user says these two aren't one person: they're not suggested again.
+    public func dismissSuggestion(_ first: Int64, _ second: Int64) throws {
+        guard first != second else { return }
+        try db.run("INSERT OR IGNORE INTO people_apart(a, b) VALUES(?, ?)",
+                   [.int(min(first, second)), .int(max(first, second))])
+    }
+
+    public func dismissedSuggestionCount() throws -> Int {
+        var count = 0
+        try db.query("SELECT COUNT(*) FROM people_apart") { count = Int($0.int(0)) }
+        return count
+    }
+
+    /// Every turned-down suggestion is offered again.
+    public func restoreSuggestions() throws {
+        try db.run("DELETE FROM people_apart")
+    }
+
+    /// Takes back every merge: people are grouped again as if the user had only named them (a named person keeps the
+    /// face on their thumbnail). Names stay.
+    public func undoMerges() throws {
+        try db.transaction {
+            try db.execute("""
+                UPDATE people SET locked = 0 WHERE name IS NULL;
+                UPDATE faces SET pinned = 0;
+                """)
+            var named: [Int64] = []
+            try db.query("SELECT id FROM people WHERE locked = 1") { named.append($0.int(0)) }
+            for id in named { try pinShownFace(of: id) }
+        }
+        try regroupPeople()
     }
 
     // MARK: Grouping
@@ -343,14 +404,16 @@ extension IndexStore {
     }
 
     /// Groups every face into people again (`FaceClustering`). Person ids stay where most of their faces stay, so names
-    /// and search filters carry over; people the user named or merged keep their faces.
+    /// and search filters carry over; people the user named or merged keep the faces they saw (`pinShownFace`), and
+    /// whatever is like those.
     public func regroupPeople() throws {
         try db.transaction {
             var ids: [Int64] = []
             var current: [Int64?] = []
             var faces: [FaceClustering.Face] = []
             try db.query("""
-                SELECT f.id, f.file, f.person, f.vec, p.locked FROM faces f LEFT JOIN people p ON p.id = f.person
+                SELECT f.id, f.file, f.person, f.vec, p.locked AND f.pinned FROM faces f
+                LEFT JOIN people p ON p.id = f.person
                 ORDER BY f.id
                 """) { row in
                 guard let blob = row.blob(3), let vector = Self.floats(half: blob) else { return }
