@@ -1,5 +1,8 @@
 import Foundation
 import Testing
+#if canImport(UniformTypeIdentifiers)
+import UniformTypeIdentifiers
+#endif
 @testable import DigUpCore
 
 @Suite final class RulesTests {
@@ -44,6 +47,19 @@ import Testing
         #expect(Rules.classify(song, type: .init(filenameExtension: "m4a"), options: options)
                 == .skip("not photos or video"))
     }
+
+    #if canImport(UniformTypeIdentifiers)
+    /// Where there's no type database, the name has to say what macOS's types say, for the formats that matter.
+    /// (Not .mkv, which macOS has no type for without a player installed, and .json, which `Rules.codeExtensions`
+    /// decides before any type.)
+    @Test func extensionsSayWhatTypesSay() throws {
+        for ext in ["jpg", "jpeg", "png", "heic", "gif", "tiff", "webp", "dng", "cr2", "nef", "arw", "mp4", "m4v", "mov",
+                    "avi", "webm", "mp3", "m4a", "wav", "flac", "aiff", "pdf", "py", "swift", "txt", "zip"] {
+            let type = try #require(UTType(filenameExtension: ext))
+            #expect(FileType(type) == FileType(filenameExtension: ext), "\(ext)")
+        }
+    }
+    #endif
 
     @Test func iso6709AndFingerprint() {
         let gps = CaptureInfo.parseISO6709("+37.7749-122.4194/")

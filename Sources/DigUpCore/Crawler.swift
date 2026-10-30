@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
+#endif
 
 /// A file the crawler decided to index.
 public struct Candidate: Sendable {
@@ -24,8 +26,12 @@ public enum Crawler {
     public static func crawl(_ roots: [URL], options: IndexOptions) -> CrawlReport {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
+        #if canImport(UniformTypeIdentifiers)
         let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .contentTypeKey, .isUbiquitousItemKey,
                                       .ubiquitousItemDownloadingStatusKey]
+        #else
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey]
+        #endif
         var report = CrawlReport()
         var projectRoots = Set<String>()
         var found: [Candidate] = []
@@ -60,7 +66,12 @@ public enum Crawler {
                     report.skipped["app or bundle", default: 0] += 1
                     return
                 }
-                let classification = Rules.classify(url, type: values?.contentType, options: options)
+                #if canImport(UniformTypeIdentifiers)
+                let type = values?.contentType.map(FileType.init)
+                #else
+                let type = FileType(filenameExtension: url.pathExtension)
+                #endif
+                let classification = Rules.classify(url, type: type, options: options)
                 switch classification {
                 case .ignore:
                     report.skipped["other type", default: 0] += 1
@@ -72,15 +83,12 @@ public enum Crawler {
                         report.skipped["link or special file", default: 0] += 1
                         return
                     }
-                    // Reading a dataless placeholder (iCloud "Optimize Mac Storage", File Providers) downloads it.
-                    let dataless = info.st_flags & 0x4000_0000 != 0  // SF_DATALESS
-                    let inCloud = values?.isUbiquitousItem == true && values?.ubiquitousItemDownloadingStatus != .current
-                    if dataless || inCloud {
+                    if isInTheCloud(info, values) {
                         report.skipped["in the cloud, not downloaded", default: 0] += 1
                         return
                     }
                     guard foundPaths.insert(url.path).inserted else { return }
-                    let mtime = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
+                    let mtime = modificationTime(info)
                     found.append(Candidate(path: url.path, kind: kind, size: Int64(info.st_size), mtime: mtime,
                                            inode: UInt64(info.st_ino), device: UInt64(bitPattern: Int64(info.st_dev))))
                 }
@@ -88,8 +96,8 @@ public enum Crawler {
 
             // URL resource values are autoreleased; draining per file keeps a big walk from piling them up (the app
             // crawls on a background queue whose pool only drains when the whole sync is done).
-            while let url = autoreleasepool(invoking: { walker.nextObject() as? URL }) {
-                autoreleasepool {
+            while let url = drainingPool({ walker.nextObject() as? URL }) {
+                drainingPool {
                     visit(url)
                 }
             }

@@ -1,5 +1,45 @@
 import Foundation
+#if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
+#endif
+
+/// What a file's type says it is, as far as choosing what to index goes.
+public enum FileType: Sendable, Equatable {
+    case code, pdf, image, movie, audio, other
+
+    /// From the name alone, where the system keeps no type database (Linux, Windows): the formats cameras, phones and
+    /// screen recorders write.
+    public init(filenameExtension ext: String) {
+        let ext = ext.lowercased()
+        if Rules.codeExtensions.contains(ext) { self = .code }
+        else if ext == "pdf" { self = .pdf }
+        else if Self.images.contains(ext) { self = .image }
+        else if Self.movies.contains(ext) { self = .movie }
+        else if Self.sounds.contains(ext) { self = .audio }
+        else { self = .other }
+    }
+
+    static let images: Set<String> = ["jpg", "jpeg", "png", "heic", "heif", "gif", "tif", "tiff", "bmp", "webp", "avif",
+                                      "jxl", "dng", "cr2", "cr3", "nef", "arw", "orf", "rw2", "raf", "srw", "pef"]
+    static let movies: Set<String> = ["mp4", "m4v", "mov", "avi", "mkv", "webm", "mpg", "mpeg", "3gp", "wmv", "flv",
+                                      "ts", "mts", "m2ts"]
+    static let sounds: Set<String> = ["mp3", "m4a", "aac", "wav", "flac", "ogg", "oga", "opus", "aif", "aiff", "wma",
+                                      "caf", "amr"]
+}
+
+#if canImport(UniformTypeIdentifiers)
+extension FileType {
+    /// From the system's type of the file (on macOS, what Spotlight knows of it).
+    public init(_ type: UTType) {
+        if type.conforms(to: .sourceCode) || type.conforms(to: .script) { self = .code }
+        else if type.conforms(to: .pdf) { self = .pdf }
+        else if type.conforms(to: .image) { self = .image }
+        else if type.conforms(to: .movie) { self = .movie }
+        else if type.conforms(to: .audio) { self = .audio }
+        else { self = .other }
+    }
+}
+#endif
 
 public enum Classification: Equatable, Sendable {
     case index(FileKind)
@@ -46,7 +86,7 @@ public enum Rules {
                 ".pypirc", "htpasswd", ".htpasswd"].contains(where: lower.hasPrefix)
     }
 
-    public static func classify(_ url: URL, type: UTType?, options: IndexOptions) -> Classification {
+    public static func classify(_ url: URL, type: FileType?, options: IndexOptions) -> Classification {
         let ext = url.pathExtension.lowercased()
         if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
         // .ts / .mts are usually TypeScript, which Spotlight calls MPEG-2 video. Only a real transport stream is video.
@@ -56,17 +96,14 @@ public enum Rules {
         }
         if docExtensions.contains(ext) { return accept(.doc, options) }
         if codeExtensions.contains(ext) { return .skip("code or data file") }
-        guard let type else { return .ignore }
-        if type.conforms(to: .sourceCode) || type.conforms(to: .script) {
-            return .skip("code or data file")
+        switch type {
+        case .code: return .skip("code or data file")
+        case .pdf: return accept(.pdf, options)
+        case .image: return accept(isScreenshot(url) ? .screenshot : .image, options)
+        case .movie: return accept(.video, options)
+        case .audio: return accept(.audio, options)
+        case .other, nil: return .ignore
         }
-        if type.conforms(to: .pdf) { return accept(.pdf, options) }
-        if type.conforms(to: .image) {
-            return accept(isScreenshot(url) ? .screenshot : .image, options)
-        }
-        if type.conforms(to: .movie) { return accept(.video, options) }
-        if type.conforms(to: .audio) { return accept(.audio, options) }
-        return .ignore
     }
 
     /// Applies `IndexOptions.kinds` (photos & video MVP skips screenshots, PDFs, documents and audio).
@@ -86,7 +123,9 @@ public enum Rules {
 
     /// macOS marks screenshots with an extended attribute that survives moves and copies; names are the fallback.
     public static func isScreenshot(_ url: URL) -> Bool {
+        #if os(macOS)
         if getxattr(url.path, "com.apple.metadata:kMDItemIsScreenCapture", nil, 0, 0, 0) > 0 { return true }
+        #endif
         let name = url.lastPathComponent
         return screenshotPrefixes.contains { name.hasPrefix($0) }
     }

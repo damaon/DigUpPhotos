@@ -1,4 +1,8 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 
 /// The EmbeddingGemma 2 files the app runs: ggml-org's Q8_0 GGUF conversion at one pinned revision of the repo (made
@@ -72,7 +76,7 @@ public enum ModelFiles {
         defer { try? handle.close() }
         var hasher = SHA256()
         while true {
-            let done = try autoreleasepool { () -> Bool in
+            let done = try drainingPool { () -> Bool in
                 guard let data = try handle.read(upToCount: 8 << 20), !data.isEmpty else { return true }
                 hasher.update(data: data)
                 return false
