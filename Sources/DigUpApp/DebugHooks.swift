@@ -319,7 +319,7 @@ enum DebugHooks {
                 let people = Set((defaults.string(forKey: "debugPeople") ?? "").split(separator: ",")
                     .compactMap { Int64($0) })
                 if !people.isEmpty { search.peopleFilter = people }
-                loaded = { (search.query.isEmpty && !search.browsingPeople) || search.hasResults }
+                loaded = { (search.query.isEmpty && !search.browsing) || search.hasResults }
                 draw = { try app.searchWindow.snapshot(to: $0) }
                 close = { app.searchWindow.close() }
             }

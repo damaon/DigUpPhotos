@@ -184,6 +184,29 @@ import Testing
         #expect(Searcher.gate(2, deviation: 0.02) > 2)
     }
 
+    @Test func timesInTheQuery() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        calendar.locale = Locale(identifier: "en_US")
+        let now = try #require(calendar.date(from: DateComponents(year: 2026, month: 10, day: 30)))
+        func parse(_ text: String) -> (String, String)? {
+            DateSpan.parse(text, now: now, calendar: calendar).map { ($0.span.title, $0.rest) }
+        }
+        #expect(parse("beach 2023")! == ("2023", "beach"))
+        #expect(parse("plaża w 2023")! == ("2023", "plaża"))
+        #expect(parse("july 2023 wedding")! == ("July 2023", "wedding"))
+        #expect(parse("lipca 2024")! == ("July 2024", ""))
+        #expect(parse("trip 2019-2021")! == ("2019–2021", "trip"))
+        #expect(parse("snow last year")! == ("2025", "snow"))
+        #expect(parse("góry w zeszłym roku")! == ("2025", "góry"))
+        #expect(parse("1080p video") == nil)
+        #expect(parse("order 4815162342") == nil)
+        #expect(parse("1975") == nil)
+        let span = try #require(DateSpan.month(2, of: 2024, calendar: calendar))
+        #expect(span.contains(try #require(calendar.date(from: DateComponents(year: 2024, month: 2, day: 29, hour: 23)))))
+        #expect(!span.contains(try #require(calendar.date(from: DateComponents(year: 2024, month: 3, day: 1)))))
+    }
+
     @Test func nestedRootsAreCrawledOnce() throws {
         let inner = folder.appendingPathComponent("inner")
         try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)

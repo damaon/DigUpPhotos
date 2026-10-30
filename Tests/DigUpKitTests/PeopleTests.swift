@@ -331,7 +331,9 @@ import Testing
     }
 
     /// People picked with nothing typed: every photo with all of them, newest first, each photo once.
-    @Test func photosOfPeopleNewestFirst() throws {
+    /// Picking people or a time with nothing typed: their photos, newest by when they were taken, whichever way the
+    /// camera wrote it (a video's ISO date sorted before a photo's EXIF one of the same year as text).
+    @Test func photosOfPeopleAndTimesNewestFirst() throws {
         let store = try IndexStore(directory: folder)
         var faces = Faces()
         try store.db.execute("INSERT INTO people(id, name) VALUES(1, 'Anna'), (2, 'Bob')")
@@ -352,14 +354,19 @@ import Testing
         _ = try photo("IMG_E0002.JPG", taken: "2024:06:01 10:00:00", people: [1])   // the same photo, edited
         _ = try photo("together.jpg", taken: "2023:08:01 10:00:00", people: [1, 2])
         _ = try photo("bob.jpg", taken: "2025:01:01 10:00:00", people: [2])
+        _ = try photo("late.jpg", taken: "2024-12-31T10:00:00Z", people: [1])
         let searcher = try Searcher(store: store, loadVectors: false)
-        let names = { (people: Set<Int64>) in
-            try searcher.photos(of: people).map { ($0.path as NSString).lastPathComponent }
+        let names = { (people: Set<Int64>, dates: DateSpan?) in
+            try searcher.photos(of: people, in: dates).map { ($0.path as NSString).lastPathComponent }
         }
-        #expect(try names([1]) == ["IMG_E0002.JPG", "together.jpg", "IMG_0001.HEIC"])
-        #expect(try names([1, 2]) == ["together.jpg"])
+        #expect(try names([1], nil) == ["late.jpg", "IMG_E0002.JPG", "together.jpg", "IMG_0001.HEIC"])
+        #expect(try names([1, 2], nil) == ["together.jpg"])
         #expect(try searcher.photos(of: [1], kinds: [.video]).isEmpty)
-        #expect(try names([]).isEmpty)
+        #expect(try names([], nil) == ["bob.jpg", "late.jpg", "IMG_E0002.JPG", "together.jpg", "IMG_0001.HEIC"])
+        #expect(try names([], DateSpan.year(2023)) == ["together.jpg", "IMG_0001.HEIC"])
+        #expect(try names([1], DateSpan.month(6, of: 2024)) == ["IMG_E0002.JPG"])
+        #expect(try names([2], DateSpan.year(2024)).isEmpty)
+        #expect(searcher.photoMonths()[2024] == [6: 2, 12: 1])
     }
 
     /// A suggestion turned down stays away until the user asks to see them all again.

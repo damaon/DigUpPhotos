@@ -28,6 +28,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
             search.query = query
         }
         search.refreshPeople()
+        search.refreshMonths()
         app.present(window)
         if !AppController.offscreen { window.makeFirstResponder(search.field) }
         installKeyMonitor()
@@ -145,8 +146,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
                 QLPreviewPanel.shared().orderOut(nil)
             } else if !search.query.isEmpty {
                 search.query = ""
-            } else if !search.peopleFilter.isEmpty {
+            } else if !search.peopleFilter.isEmpty || search.dateFilter != nil {
                 search.peopleFilter = []   // then back to the start
+                search.dateFilter = nil
             } else {
                 return false
             }
@@ -212,10 +214,25 @@ final class SearchModel {
     var peopleFilter: Set<Int64> = [] {
         didSet { if peopleFilter != oldValue { run() } }
     }
-    /// People picked and nothing typed: their photos, newest first, rather than search results.
-    var browsingPeople: Bool {
-        !peopleFilter.isEmpty && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    /// The time picked in the date menu. Nil: any time, or the time the query names ("beach 2023", `typedDates`).
+    var dateFilter: DateSpan? {
+        didSet { if dateFilter != oldValue { run() } }
     }
+    /// The time the typed words name, when no date is picked: it filters, and the rest of the words are searched for.
+    var typedDates: (span: DateSpan, rest: String)? {
+        dateFilter == nil ? DateSpan.parse(query.trimmingCharacters(in: .whitespacesAndNewlines)) : nil
+    }
+    /// What results are limited to: the picked time, else the typed one.
+    var dates: DateSpan? { dateFilter ?? typedDates?.span }
+    /// The words searched for: the query without the time it names.
+    private var words: String {
+        (typedDates?.rest ?? query).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    /// People or a time picked and nothing else typed: their photos, newest first, rather than search results.
+    var browsing: Bool { words.isEmpty && (!peopleFilter.isEmpty || dates != nil) }
+    var browsingPeople: Bool { browsing && !peopleFilter.isEmpty }
+    /// Photos and videos per year and month, for the date menu.
+    private(set) var months: [Int: [Int: Int]] = [:]
     private(set) var people: [Person] = []
     private(set) var results = ResultSet.empty
     /// Results per kind for the query, whatever the filter (the counts on the kind buttons).
@@ -249,6 +266,10 @@ final class SearchModel {
     func research() {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         run()
+    }
+
+    func refreshMonths() {
+        Task { months = await engine.photoMonths() }
     }
 
     func refreshPeople() {
@@ -310,24 +331,26 @@ final class SearchModel {
         navigated = true
     }
 
-    /// All photos of the picked people (`Engine.photos(of:)`), in the kind picked; no query to read or embed.
-    private func browse(people: Set<Int64>, generation current: Int) {
+    /// All photos of the picked people taken in `dates` (`Engine.photos(of:)`), in the kind picked; no query to read
+    /// or embed.
+    private func browse(people: Set<Int64>, dates: DateSpan?, generation current: Int) {
         interpreted = nil
         rewriteNote = nil
         interpreting = false
         let filter = self.filter
         task = Task {
-            let all = await engine.photos(of: people)
-            let shown = filter == nil ? all : await engine.photos(of: people, kinds: filter!.kinds)
+            let all = await engine.photos(of: people, in: dates)
+            let shown = filter == nil ? all : await engine.photos(of: people, in: dates, kinds: filter!.kinds)
             guard !Task.isCancelled, current == generation else { return }
             var counts: [ResultGroupKind: Int] = [:]
             for hit in all { counts[ResultGroupKind(hit.kind), default: 0] += 1 }
             self.counts = counts
-            results = ResultSet(shown)
+            results = ResultSet(shown, browsed: people.isEmpty ? .time : .people)
             showWeaker = false
             if !rows.contains(where: { $0.id == selection }) { selection = rows.first?.id }
             hasResults = true
-            log("window: \(people.count) people (AND), nothing typed: \(results.ranked.count) photos")
+            log("window: \(people.count) people (AND), \(dates?.title ?? "any time"), nothing typed: "
+                + "\(results.ranked.count) photos")
         }
     }
 
@@ -336,9 +359,10 @@ final class SearchModel {
         let current = generation
         task?.cancel()
         navigated = false
-        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty, !peopleFilter.isEmpty {
-            browse(people: peopleFilter, generation: current)
+        let text = words
+        let dates = self.dates
+        if browsing {
+            browse(people: peopleFilter, dates: dates, generation: current)
             return
         }
         guard !text.isEmpty else {
@@ -374,9 +398,11 @@ final class SearchModel {
             let vector = await engine.embedQuery(asked, typed: text)
             guard !Task.isCancelled, current == generation else { return }
             let peopleArg: Set<Int64>? = people.isEmpty ? nil : people
-            let all = await engine.search(asked, vector: vector, prefixLast: false, people: peopleArg, limit: 120)
+            let all = await engine.search(asked, vector: vector, prefixLast: false, people: peopleArg, dates: dates,
+                                          limit: 120)
             let shown = filter == nil ? all : await engine.search(asked, vector: vector, prefixLast: false,
-                                                                    kinds: filter!.kinds, people: peopleArg, limit: 120)
+                                                                    kinds: filter!.kinds, people: peopleArg,
+                                                                    dates: dates, limit: 120)
             if !rewrite {
                 try? await Task.sleep(until: showAt, tolerance: .milliseconds(1), clock: .continuous)
             }
@@ -388,7 +414,7 @@ final class SearchModel {
             showWeaker = false
             if !rows.contains(where: { $0.id == selection }) { selection = rows.first?.id }
             hasResults = true
-            let who = people.isEmpty ? "" : " · \(people.count) people (AND)"
+            let who = (people.isEmpty ? "" : " · \(people.count) people (AND)") + (dates.map { " · \($0.title)" } ?? "")
             log("window: \"\(text)\"\(filter.map { " in \($0.title)" } ?? "")\(who): \(results.ranked.count) results "
                 + "+ \(results.weaker.count) weaker")
         }
@@ -499,14 +525,20 @@ struct SearchWindowView: View {
                                     openSettings: { app.showSettings() })
                     .padding(.leading, 90)
             }
-            KindFilters(search: search,
-                        photosAndVideoOnly: model.settings.photosAndVideoOnly)
+            HStack(spacing: 6) {
+                KindFilters(search: search,
+                            photosAndVideoOnly: model.settings.photosAndVideoOnly)
+                DateFilter(search: search)
+            }
             if !search.people.isEmpty {
                 PersonFilters(search: search)
             }
         }
         // Indexing groups people again as faces come in.
-        .onChange(of: model.status) { search.refreshPeople() }
+        .onChange(of: model.status) {
+            search.refreshPeople()
+            search.refreshMonths()
+        }
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
     }
@@ -527,19 +559,28 @@ struct SearchWindowView: View {
             }
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if search.query.trimmingCharacters(in: .whitespaces).isEmpty, !search.browsingPeople {
+        } else if search.query.trimmingCharacters(in: .whitespaces).isEmpty, !search.browsing {
             SearchHome(search: search, model: model, engine: app.engine)
         } else if !search.hasResults {
             ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if search.results.isEmpty, search.browsingPeople {
+        } else if search.results.isEmpty, search.browsing, search.peopleFilter.isEmpty {
+            EmptyState(symbol: "calendar",
+                       title: "No photos from \(search.dates?.title ?? "then")",
+                       message: search.filter == nil ? "Try another time." : "Try All instead of \(search.filter!.title).")
+        } else if search.results.isEmpty, search.browsing {
             EmptyState(symbol: "person.2",
-                       title: search.peopleFilter.count > 1 ? "No photos of them together" : "No photos of them here",
-                       message: search.filter == nil ? "They may be in folders that aren't searched any more."
+                       title: (search.peopleFilter.count > 1 ? "No photos of them together" : "No photos of them here")
+                           + (search.dates.map { " in \($0.title)" } ?? ""),
+                       message: search.filter == nil
+                           ? (search.dates == nil ? "They may be in folders that aren't searched any more."
+                                                  : "Try another time.")
                            : "Try All instead of \(search.filter!.title).")
         } else if search.results.isEmpty {
             EmptyState(symbol: "magnifyingglass",
                        title: "No good matches for “\(search.query.trimmingCharacters(in: .whitespaces))”",
-                       message: "Try describing what's in it: what you'd see or hear, or words you remember.")
+                       message: search.dates != nil || !search.peopleFilter.isEmpty
+                           ? "Try without the time or people picked, or describe it another way."
+                           : "Try describing what's in it: what you'd see or hear, or words you remember.")
         } else {
             ResultsGrid(search: search)
         }
@@ -567,7 +608,7 @@ struct SearchWindowView: View {
                 .fixedSize()
                 .help("Paths of these results, one per line, to paste or save for another program")
             }
-            if search.hasResults, !search.query.isEmpty || search.browsingPeople {
+            if search.hasResults, !search.query.isEmpty || search.browsing {
                 Text(model.resultsCaveat ?? resultCount).lineLimit(1)
             }
             if let version = model.updateAvailable {
@@ -593,7 +634,7 @@ struct SearchWindowView: View {
 
     private var resultCount: String {
         let count = search.results.ranked.count
-        if search.browsingPeople { return count == 1 ? "1 photo" : "\(count) photos" }
+        if search.browsing { return count == 1 ? "1 photo" : "\(count) photos" }
         return (count == 1 ? "1 result" : "\(count) results")
             + (search.results.weaker.isEmpty ? "" : " · \(search.results.weaker.count) weaker")
     }
@@ -670,6 +711,67 @@ private struct PersonFilters: View {
     }
 }
 
+/// Any Time ▾: a year, a month of it, or the last days. A time typed in the query ("beach 2023") shows here too, and
+/// picking one here searches the words as typed.
+private struct DateFilter: View {
+    @Bindable var search: SearchModel
+
+    private var years: [Int] { search.months.keys.sorted(by: >) }
+
+    var body: some View {
+        let on = search.dates != nil
+        HStack(spacing: 0) {
+            Menu {
+                Button("Any Time") { search.dateFilter = nil }
+                Divider()
+                if let span = DateSpan.last(days: 30) { Button(span.title) { search.dateFilter = span } }
+                if let span = DateSpan.last(days: 365) { Button("Last 12 Months") { search.dateFilter = span } }
+                Divider()
+                ForEach(years, id: \.self) { year in
+                    let months = search.months[year] ?? [:]
+                    Menu("\(String(year)) · \(months.values.reduce(0, +))") {
+                        if let span = DateSpan.year(year) { Button("All of \(String(year))") { search.dateFilter = span } }
+                        Divider()
+                        ForEach(months.keys.sorted(by: >), id: \.self) { month in
+                            if let span = DateSpan.month(month, of: year) {
+                                Button("\(Calendar.current.standaloneMonthSymbols[month - 1]) · \(months[month]!)") {
+                                    search.dateFilter = span
+                                }
+                            }
+                        }
+                    } primaryAction: {
+                        search.dateFilter = DateSpan.year(year)
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "calendar").font(.system(size: 10.5))
+                    Text(search.dates?.title ?? "Any Time")
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            if search.dateFilter != nil {
+                Button {
+                    search.dateFilter = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 5)
+                .help("Any time")
+            }
+        }
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(on ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(on ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color.primary.opacity(0.06))))
+        .help(search.typedDates != nil ? "From your words; pick a time to search them all as typed" : "When it was taken")
+    }
+}
+
 /// All · Photos 4 · Video 9 · …: what the query found of each kind; click to see only that kind.
 private struct KindFilters: View {
     @Bindable var search: SearchModel
@@ -698,7 +800,7 @@ private struct KindFilters: View {
             HStack(spacing: 5) {
                 if let symbol { Image(systemName: symbol).font(.system(size: 10.5)) }
                 Text(title)
-                if let count, !search.query.isEmpty || search.browsingPeople {
+                if let count, !search.query.isEmpty || search.browsing {
                     Text("\(count)").monospacedDigit().opacity(0.6)
                 }
             }

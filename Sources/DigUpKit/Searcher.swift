@@ -40,6 +40,8 @@ public final class Searcher {
     /// False for the vectors the later pass adds (`Indexer.finishLongFiles`): scored, but they don't set the scale.
     private var rowSetsScale: [Bool] = []
     private var fileKind: [Int64: FileKind] = [:]
+    /// When each file was taken (`info.taken`), else when it was last changed: what date filters and browsing go by.
+    private var fileDate: [Int64: Date] = [:]
     public private(set) var vectorSource: String?
     /// False after `releaseVectors()` (or `loadVectors: false`): keyword search still works, and the next search with
     /// a query vector loads them again.
@@ -99,8 +101,11 @@ public final class Searcher {
 
     private func reloadFiles() throws {
         fileKind.removeAll(keepingCapacity: true)
-        try store.db.query("SELECT id, kind FROM files") { row in
+        fileDate.removeAll(keepingCapacity: true)
+        var dates = CaptureDates()
+        try store.db.query("SELECT id, kind, mtime, json_extract(info, '$.taken') FROM files") { row in
             fileKind[row.int(0)] = FileKind(rawValue: row.text(1) ?? "")
+            fileDate[row.int(0)] = dates.date(row.text(3)) ?? Date(timeIntervalSince1970: row.double(2))
         }
         vectorSource = try store.meta("vector_source")
     }
@@ -123,18 +128,19 @@ public final class Searcher {
     }
 
     /// Hybrid search. `people`: only photos that contain every listed person on the same image (AND). Nil or empty
-    /// means no people filter.
+    /// means no people filter. `dates`: only files taken (or, without a capture date, changed) then.
     public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil,
-                       people: Set<Int64>? = nil, limit: Int = 20, zGate: Double = 2.0,
+                       people: Set<Int64>? = nil, dates: DateSpan? = nil, limit: Int = 20, zGate: Double = 2.0,
                        minLift: Double = Searcher.minLift, wordWeight: Double? = nil,
                        prefixLast: Bool = false, clauseVectors: [[Float]] = []) throws -> [SearchHit] {
         let wordWeight = wordWeight ?? Self.wordWeight
         if queryVector != nil, !vectorsLoaded { try reload() }
-        let fileKind = self.fileKind
+        let fileKind = self.fileKind, fileDate = self.fileDate
         // AND: a photo must include Person A and Person B when both are selected.
         let peopleFiles = try store.filesContaining(allPeople: people ?? [])
         let allowed = { (file: Int64) -> Bool in
             guard kinds == nil || fileKind[file].map({ kinds!.contains($0) }) ?? false else { return false }
+            if let dates, !(fileDate[file].map(dates.contains) ?? false) { return false }
             if let peopleFiles { return peopleFiles.contains(file) }
             return true
         }
@@ -285,27 +291,45 @@ public final class Searcher {
         return PhotoCopies.one(hits, path: \.path, isPhoto: { $0.kind == .image })
     }
 
-    /// Every photo with all of `people` on it (AND), newest first by when it was taken: what picking people shows before
-    /// anything is typed. Each points at the picture, like a meaning hit, with the same score (none is a better match).
-    public func photos(of people: Set<Int64>, kinds: Set<FileKind>? = nil, limit: Int = 1000) throws -> [SearchHit] {
-        guard let files = try store.filesContaining(allPeople: people), !files.isEmpty else { return [] }
-        var hits: [SearchHit] = []
+    /// Every photo and video with all of `people` on it (AND) and taken in `dates`, newest first: what picking people
+    /// or a time shows before anything is typed. No people and no dates is everything. Each points at the picture (a
+    /// video at its first frame), like a meaning hit, with the same score (none is a better match).
+    public func photos(of people: Set<Int64> = [], in dates: DateSpan? = nil, kinds: Set<FileKind>? = nil,
+                       limit: Int = 5000) throws -> [SearchHit] {
+        let files = try store.filesContaining(allPeople: people)
+        if let files, files.isEmpty { return [] }
+        var found: [(date: Date, hit: SearchHit)] = []
         try store.db.query("""
-            SELECT f.path, f.kind, f.mtime, f.size, f.info, s.id FROM files f
-            JOIN segments s ON s.file = f.id AND s.kind = 'image'
-            WHERE f.id IN (\(files.map(String.init).joined(separator: ",")))
-            ORDER BY COALESCE(json_extract(f.info, '$.taken'), strftime('%Y:%m:%d %H:%M:%S', f.mtime, 'unixepoch')) DESC,
-                f.id DESC
+            SELECT f.id, f.path, f.kind, f.mtime, f.size, f.info,
+                (SELECT s.id FROM segments s WHERE s.file = f.id AND s.kind IN ('image', 'frame')
+                 ORDER BY s.kind = 'frame', s.loc LIMIT 1)
+            FROM files f WHERE f.kind IN ('image', 'screenshot', 'video')
+            \(files.map { "AND f.id IN (\($0.map(String.init).joined(separator: ",")))" } ?? "")
             """) { row in
-            let kind = FileKind(rawValue: row.text(1) ?? "") ?? .image
-            guard kinds?.contains(kind) ?? true else { return }
-            let info = row.text(4)?.data(using: .utf8)
+            let kind = FileKind(rawValue: row.text(2) ?? "") ?? .image
+            guard kinds?.contains(kind) ?? true, !row.isNull(6),
+                  let date = fileDate[row.int(0)], dates?.contains(date) ?? true else { return }
+            let info = row.text(5)?.data(using: .utf8)
                 .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] } ?? [:]
-            hits.append(SearchHit(path: row.text(0) ?? "", kind: kind, score: 1, z: nil, cosine: nil, keywordRank: nil,
-                                  segment: .image, segmentID: row.int(5), loc: nil, locEnd: nil, excerpt: nil,
-                                  modified: row.double(2), size: row.int(3), info: info))
+            found.append((date, SearchHit(path: row.text(1) ?? "", kind: kind, score: 1, z: nil, cosine: nil,
+                                          keywordRank: nil, segment: kind == .video ? .frame : .image,
+                                          segmentID: row.int(6), loc: nil, locEnd: nil, excerpt: nil,
+                                          modified: row.double(3), size: row.int(4), info: info)))
         }
-        return Array(PhotoCopies.one(hits, path: \.path, isPhoto: { $0.kind == .image }).prefix(limit))
+        let newest = found.sorted { $0.date != $1.date ? $0.date > $1.date : $0.hit.path > $1.hit.path }.map(\.hit)
+        return Array(PhotoCopies.one(newest, path: \.path, isPhoto: { $0.kind == .image }).prefix(limit))
+    }
+
+    /// How many photos and videos were taken in each month: year → month (1…12) → count. The date filter's choices.
+    public func photoMonths() -> [Int: [Int: Int]] {
+        var months: [Int: [Int: Int]] = [:]
+        let calendar = Calendar.current
+        for (file, date) in fileDate where [.image, .screenshot, .video].contains(fileKind[file]) {
+            let parts = calendar.dateComponents([.year, .month], from: date)
+            guard let year = parts.year, let month = parts.month else { continue }
+            months[year, default: [:]][month, default: 0] += 1
+        }
+        return months
     }
 
     /// Codes and IDs ("K7Q2LM", "TRX50") and long numbers ("4815162342": an order, a phone number) mean nothing to an
@@ -748,3 +772,13 @@ public final class Searcher {
     }
 }
 
+/// Capture dates as indexing wrote them (`CaptureInfo.date`), read many at a time: one ISO-8601 reader for them all.
+struct CaptureDates {
+    private let iso = ISO8601DateFormatter()
+
+    func date(_ text: String?) -> Date? {
+        guard let text, !text.isEmpty else { return nil }
+        if text.contains("-") { return iso.date(from: text) ?? CaptureInfo.date(from: text) }
+        return CaptureInfo.date(from: text)
+    }
+}

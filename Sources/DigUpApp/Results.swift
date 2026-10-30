@@ -15,15 +15,15 @@ struct ResultRow: Identifiable, Equatable {
     let excerpt: String?    // matched words are wrapped in « »
     let matchedMeaning: Bool
     let matchedWords: Bool
-    /// Here because the people picked are on it, with nothing typed (`Searcher.photos(of:)`), not as a match.
-    let pickedPeople: Bool
+    /// Why it's here when people or a time were picked with nothing typed (`Searcher.photos(of:)`): not as a match.
+    let browsed: Browsed?
     let modified: Date
     let size: Int64
     let info: [String: String]
     /// The query's words (`Searcher.terms`): what the preview highlights on a page or in a passage.
     let terms: [String]
 
-    init(_ hit: SearchHit, terms: [String] = []) {
+    init(_ hit: SearchHit, terms: [String] = [], browsed: Browsed? = nil) {
         id = hit.path
         url = URL(fileURLWithPath: hit.path)
         name = url.lastPathComponent
@@ -36,7 +36,7 @@ struct ResultRow: Identifiable, Equatable {
         excerpt = hit.excerpt.flatMap { $0.isEmpty ? nil : $0 }
         matchedMeaning = hit.matchedMeaning
         matchedWords = hit.keywordRank != nil
-        pickedPeople = hit.z == nil && hit.keywordRank == nil && hit.segment == .image
+        self.browsed = browsed
         modified = Date(timeIntervalSince1970: hit.modified)
         size = hit.size
         info = hit.info
@@ -77,7 +77,7 @@ struct ResultRow: Identifiable, Equatable {
 
     /// Why it's here, in a few words: "Matches the picture", "Matches the frame at 0:06".
     var reason: String {
-        if pickedPeople { return "Has the people you picked" }
+        if let browsed { return browsed.reason }
         guard matchedMeaning else { return matchedWords ? "Has your words" : "Matches its name" }
         let place = loc.map(Self.clock) ?? ""
         let page = loc.map { "page \(Int($0))" } ?? "a page"
@@ -167,6 +167,15 @@ struct ResultRow: Identifiable, Equatable {
     }
 }
 
+/// Why photos are shown when people or a time were picked and nothing typed.
+struct Browsed: Equatable {
+    let reason: String
+    let symbol: String
+
+    static let people = Browsed(reason: "Has the people you picked", symbol: "person.2")
+    static let time = Browsed(reason: "Taken in the time you picked", symbol: "calendar")
+}
+
 /// How results are grouped in the panel, and the kind filters in the window.
 enum ResultGroupKind: CaseIterable {
     case screenshots, images, documents, video, audio
@@ -244,12 +253,13 @@ struct ResultSet: Equatable {
 
     init() {}
 
-    init(_ hits: [SearchHit], query: String = "", rowsPerGroup: Int = .max) {
-        let strong = Searcher.strongCount(hits)
+    /// `browsed`: the hits are people's or a time's photos, with nothing typed, all strong; why they're here.
+    init(_ hits: [SearchHit], query: String = "", rowsPerGroup: Int = .max, browsed: Browsed? = nil) {
+        let strong = browsed == nil ? Searcher.strongCount(hits) : hits.count
         let terms = Searcher.terms(query)
         var order: [ResultGroupKind] = []
         var byGroup: [ResultGroupKind: [ResultRow]] = [:]
-        ranked = hits.prefix(strong).map { ResultRow($0, terms: terms) }
+        ranked = hits.prefix(strong).map { ResultRow($0, terms: terms, browsed: browsed) }
         for row in ranked {
             let group = ResultGroupKind(row.kind)
             if byGroup[group] == nil { order.append(group) }

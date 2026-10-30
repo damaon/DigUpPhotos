@@ -543,9 +543,9 @@ nonisolated final class Engine: @unchecked Sendable {
     /// Hybrid search. Without a vector it's keyword-only (file names, OCR and document text), which is what the panel
     /// shows while the query encoder starts. Files that are gone (deleted since the last sync, or on a drive that's
     /// unplugged) are left out.
-    /// `people`: only photos that contain every listed person together (AND).
+    /// `people`: only photos that contain every listed person together (AND). `dates`: only files taken then.
     func search(_ text: String, vector: QueryVector?, prefixLast: Bool, kinds: Set<FileKind>? = nil,
-                people: Set<Int64>? = nil, limit: Int = 40) async -> [SearchHit] {
+                people: Set<Int64>? = nil, dates: DateSpan? = nil, limit: Int = 40) async -> [SearchHit] {
         await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
                 var values = vector?.values
@@ -560,18 +560,29 @@ nonisolated final class Engine: @unchecked Sendable {
                 }
                 let parsed = Searcher.parse(text)
                 if parsed.hasOperators { log("search: \(parsed.expression.summary)") }
-                let hits = try? searcher?.search(text, queryVector: values, kinds: kinds, people: people, limit: limit,
+                let hits = try? searcher?.search(text, queryVector: values, kinds: kinds, people: people, dates: dates,
+                                                 limit: limit,
                                                  prefixLast: prefixLast, clauseVectors: clauses)
                 continuation.resume(returning: searched(hits ?? []))
             }
         }
     }
 
-    /// Every photo with all of `people` on it, newest first (`Searcher.photos(of:)`): the people picked, nothing typed.
-    func photos(of people: Set<Int64>, kinds: Set<FileKind>? = nil) async -> [SearchHit] {
+    /// Every photo with all of `people` on it, taken in `dates`, newest first (`Searcher.photos(of:)`): people or a
+    /// time picked, nothing typed.
+    func photos(of people: Set<Int64>, in dates: DateSpan?, kinds: Set<FileKind>? = nil) async -> [SearchHit] {
         await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
-                continuation.resume(returning: searched((try? searcher?.photos(of: people, kinds: kinds)) ?? []))
+                continuation.resume(returning: searched((try? searcher?.photos(of: people, in: dates, kinds: kinds)) ?? []))
+            }
+        }
+    }
+
+    /// Photos and videos per year and month (`Searcher.photoMonths`): the date filter's choices.
+    func photoMonths() async -> [Int: [Int: Int]] {
+        await withCheckedContinuation { continuation in
+            searchQueue.async { [self] in
+                continuation.resume(returning: searcher?.photoMonths() ?? [:])
             }
         }
     }
