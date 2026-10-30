@@ -3,15 +3,9 @@ import CoreML
 import CoreVideo
 import Foundation
 import Vision
+import DigUpCore
 
-/// Who a face is: 128 numbers from SFace (OpenCV Zoo, Apache-2.0), a face-recognition model, for a face lined up by its
-/// eyes, nose and mouth (`aligned`). Faces of one person are close whatever they wear or where they are.
-///
-/// EmbeddingGemma did this before (`FaceDetector.version` 2). It describes a picture, so it grouped a face with
-/// whatever was around it: one man's 532 faces in ~1,500 came out as 23 people, and other people on the same photo
-/// were put together 3× as often (4.7% vs 1.7% at the same threshold, 2026-10-30).
-public enum FaceIdentity {
-    static let dimension = 128
+extension FaceIdentity {
     static let side = 112
 
     /// Where the eyes, nose tip and mouth corners go in the 112×112 face (left to right as seen, y down): ArcFace's,

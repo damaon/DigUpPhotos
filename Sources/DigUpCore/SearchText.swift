@@ -156,13 +156,13 @@ public enum Landmark {
     }
 }
 
-enum Script {
-    static let indic: ClosedRange<UInt32> = 0x0900...0x0DFF
-    static let arabic: ClosedRange<UInt32> = 0x0600...0x06FF
+public enum Script {
+    public static let indic: ClosedRange<UInt32> = 0x0900...0x0DFF
+    public static let arabic: ClosedRange<UInt32> = 0x0600...0x06FF
 }
 
 /// What's wrong with the text PDFKit read from a page, when the page's text layer can't be used as it is.
-enum PageTextProblem: Equatable {
+public enum PageTextProblem: Equatable {
     /// Bengali or Hindi read in glyph order: vowel signs ahead of their consonants, conjuncts lost ("চুক্তিপত্র" reads
     /// "চিপ"). PDFKit reads most Bengali PDFs this way, whatever made them (Quartz, WebKit, Chrome). The page is used
     /// as a picture instead (Apple's OCR doesn't read Bengali).
@@ -172,7 +172,7 @@ enum PageTextProblem: Equatable {
     /// alef, not أ: "أ.د." (Prof. Dr.) and "ذ.م.م" (LLC) are real abbreviations.
     case lostLetters
 
-    static func check(_ text: String) -> PageTextProblem? {
+    public static func check(_ text: String) -> PageTextProblem? {
         let text = text.precomposedStringWithCanonicalMapping
         var vowelSigns = 0, misplaced = 0, lostLetters = 0
         var previous: Unicode.Scalar = " ", beforePrevious: Unicode.Scalar = " "

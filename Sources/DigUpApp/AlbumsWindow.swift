@@ -1,4 +1,5 @@
 import AppKit
+import DigUpApple
 import DigUpCore
 import Observation
 import SwiftUI

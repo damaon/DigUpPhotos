@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import CoreGraphics
+import DigUpCore
 import Foundation
 
 enum AudioExtractor {

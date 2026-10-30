@@ -1,4 +1,5 @@
 import CoreGraphics
+import DigUpCore
 import Foundation
 import ImageIO
 

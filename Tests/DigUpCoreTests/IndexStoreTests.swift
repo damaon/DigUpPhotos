@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Testing
+@testable import DigUpApple
 @testable import DigUpCore
 
 @Suite final class IndexStoreTests {

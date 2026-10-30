@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreServices
+import DigUpCore
 import Foundation
 
 /// `MediaReading` with Apple's frameworks: ImageIO and Vision for pictures and faces, PDFKit, the Cocoa text system,

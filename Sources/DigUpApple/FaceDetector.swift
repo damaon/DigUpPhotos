@@ -4,24 +4,9 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 import Vision
+import DigUpCore
 
-/// A face found in a photo: normalized Vision box and who it is (`FaceIdentity`).
-public struct DetectedFace: Sendable {
-    /// Vision bounding box (normalized, origin bottom-left).
-    public let box: CGRect
-    /// SFace's 128 numbers, unit length.
-    public let vector: [Float]
-}
-
-public enum FaceDetector {
-    /// Bump when face crops change. Photo embeddings stay; only photos that have faces are read again
-    /// (`IndexStore.reread`), so a change in which faces are found needs a `PhotoQuality.version` bump too.
-    /// 2: crops from a bigger copy of the photo, less margin, 140 tokens (2026-10-28).
-    /// 3: a face-recognition model (`FaceIdentity`) instead of EmbeddingGemma (2026-10-30).
-    static let version = 3
-    /// Most faces worth naming: the biggest ones on a crowd photo are kept.
-    static let maxFaces = 12
-
+extension FaceDetector {
     /// Face rectangles, largest first. Runs on the CPU: the Neural Engine compiler can stay busy for hours,
     /// and a request that waits on it never returns, so indexing never starts.
     static func observations(in image: CGImage) -> [VNFaceObservation] {

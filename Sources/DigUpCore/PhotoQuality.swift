@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 
 /// How good a photo looks, from cheap local signals (no cloud, no extra model).
@@ -50,15 +49,10 @@ public struct PhotoQuality: Sendable, Equatable {
         Int((value * 100).rounded().clamped(to: 0...100))
     }
 
-    /// Assess a photo thumbnail (the same one DigUp embeds). Faces are detected when `detectFaces` is on.
-    /// `faceBoxes` skips that detection (the indexer already has them from `FaceDetector`).
-    public static func assess(_ image: CGImage, detectFaces: Bool = true, faceBoxes knownFaces: [CGRect]? = nil) -> PhotoQuality {
-        let side = 256
-        guard let gray = grayscale(image, maxSide: side) else {
-            return PhotoQuality(score: 0, sharpness: 0, exposure: 0, contrast: 0, faces: 0, framing: 1)
-        }
+    /// Scores a photo from its pixels in grayscale (`gray`, at most 256 on a side: the thumbnail DigUp embeds,
+    /// shrunk) and the faces found on it (normalized boxes, origin bottom-left).
+    public static func assess(_ gray: Gray, faceBoxes: [CGRect]) -> PhotoQuality {
         let (sharp, exposure, contrast) = metrics(gray)
-        let faceBoxes = knownFaces ?? (detectFaces ? FaceDetector.observations(in: image).map(\.boundingBox) : [])
         // Landscapes (no faces): face term stays neutral at 1 so they aren't ranked down.
         let framing = faceBoxes.isEmpty ? 1.0 : faceFraming(faceBoxes)
         let combined = 0.40 * sharp + 0.25 * exposure + 0.20 * contrast + 0.15 * framing
@@ -69,28 +63,17 @@ public struct PhotoQuality: Sendable, Equatable {
 
     // MARK: Pixels
 
-    private struct Gray {
-        let width: Int
-        let height: Int
-        let pixels: [UInt8]
-    }
+    /// A picture as 8-bit gray, row by row.
+    public struct Gray {
+        public let width: Int
+        public let height: Int
+        public let pixels: [UInt8]
 
-    private static func grayscale(_ image: CGImage, maxSide: Int) -> Gray? {
-        let scale = min(1, Double(maxSide) / Double(max(image.width, image.height)))
-        let width = max(1, Int((Double(image.width) * scale).rounded()))
-        let height = max(1, Int((Double(image.height) * scale).rounded()))
-        var pixels = [UInt8](repeating: 0, count: width * height)
-        let ok = pixels.withUnsafeMutableBytes { buffer -> Bool in
-            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
-                                          bitsPerComponent: 8, bytesPerRow: width,
-                                          space: CGColorSpaceCreateDeviceGray(),
-                                          bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
-            context.interpolationQuality = .medium
-            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return true
+        public init(width: Int, height: Int, pixels: [UInt8]) {
+            self.width = width
+            self.height = height
+            self.pixels = pixels
         }
-        guard ok else { return nil }
-        return Gray(width: width, height: height, pixels: pixels)
     }
 
     private static func metrics(_ gray: Gray) -> (sharpness: Double, exposure: Double, contrast: Double) {

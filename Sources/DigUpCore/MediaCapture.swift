@@ -1,5 +1,4 @@
 import Foundation
-import ImageIO
 
 /// When and where a photo or video was captured, for albums, places and timelines later.
 public struct CaptureInfo: Sendable, Equatable {
@@ -56,20 +55,6 @@ public struct CaptureInfo: Sendable, Equatable {
         return String(format: "%.2f°%@ %.2f°%@", abs(latitude), ns, abs(longitude), ew)
     }
 
-    /// GPS from ImageIO properties (`kCGImagePropertyGPSDictionary`).
-    public static func gps(from properties: [CFString: Any]) -> (latitude: Double, longitude: Double)? {
-        guard let gps = properties[kCGImagePropertyGPSDictionary] as? [CFString: Any] else { return nil }
-        let latValue = double(gps[kCGImagePropertyGPSLatitude])
-        let lonValue = double(gps[kCGImagePropertyGPSLongitude])
-        guard let latValue, let lonValue else { return nil }
-        let latRef = (gps[kCGImagePropertyGPSLatitudeRef] as? String)?.uppercased() ?? "N"
-        let lonRef = (gps[kCGImagePropertyGPSLongitudeRef] as? String)?.uppercased() ?? "E"
-        let latitude = latRef == "S" ? -latValue : latValue
-        let longitude = lonRef == "W" ? -lonValue : lonValue
-        guard abs(latitude) <= 90, abs(longitude) <= 180 else { return nil }
-        return (latitude, longitude)
-    }
-
     /// ISO 6709 from QuickTime / iPhone video metadata, e.g. `+37.7749-122.4194/` or with altitude.
     public static func parseISO6709(_ text: String) -> (latitude: Double, longitude: Double)? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -102,15 +87,5 @@ public struct CaptureInfo: Sendable, Equatable {
         components.minute = minute
         components.second = second
         return Calendar.current.date(from: components)
-    }
-
-    private static func double(_ value: Any?) -> Double? {
-        switch value {
-        case let number as Double: number
-        case let number as Float: Double(number)
-        case let number as Int: Double(number)
-        case let number as NSNumber: number.doubleValue
-        default: nil
-        }
     }
 }

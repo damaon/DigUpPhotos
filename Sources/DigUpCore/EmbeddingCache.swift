@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 
 /// Embeddings remembered by the SHA-256 of the file's bytes, so a later pass can redo quality, faces and the other

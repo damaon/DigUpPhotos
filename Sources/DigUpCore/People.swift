@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 
 /// A person DigUp clustered from face embeddings. `name` is nil until the user names them.

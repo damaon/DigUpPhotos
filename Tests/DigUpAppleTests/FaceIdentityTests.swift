@@ -1,5 +1,6 @@
 import CoreGraphics
 import Testing
+@testable import DigUpApple
 @testable import DigUpCore
 
 @Suite struct FaceIdentityTests {

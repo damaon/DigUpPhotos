@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Testing
+@testable import DigUpApple
 @testable import DigUpCore
 
 /// Long PDFs and documents: the first step in the first pass, the rest in `finishLongFiles`, and what goes with it.

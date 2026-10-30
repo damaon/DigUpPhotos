@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import Testing
+@testable import DigUpApple
 @testable import DigUpCore
 
 @Suite struct PhotoQualityTests {
