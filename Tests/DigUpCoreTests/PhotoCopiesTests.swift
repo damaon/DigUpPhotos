@@ -1,5 +1,5 @@
 import Testing
-@testable import DigUpKit
+@testable import DigUpCore
 
 @Suite struct PhotoCopiesTests {
     /// As found in ~/Pictures: shot, converted and edited, each a search hit of its own.

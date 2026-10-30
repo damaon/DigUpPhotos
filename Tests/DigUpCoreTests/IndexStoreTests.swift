@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 import Testing
-@testable import DigUpKit
+@testable import DigUpCore
 
 @Suite final class IndexStoreTests {
     let folder: URL = {

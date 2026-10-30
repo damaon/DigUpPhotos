@@ -1,4 +1,4 @@
-import DigUpKit
+import DigUpCore
 import Foundation
 
 /// What the menubar shows about the index.

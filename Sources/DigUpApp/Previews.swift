@@ -1,6 +1,6 @@
 import AVFoundation
 import AppKit
-import DigUpKit
+import DigUpCore
 import PDFKit
 import QuickLookThumbnailing
 import SwiftUI

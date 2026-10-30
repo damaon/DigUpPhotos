@@ -1,4 +1,4 @@
-import DigUpKit
+import DigUpCore
 import Foundation
 
 /// What to index, where the index and the model live, and the hotkey.

@@ -1,5 +1,5 @@
 import AppKit
-import DigUpKit
+import DigUpCore
 import SwiftUI
 
 /// Settings → Folders → Add Folders…: a sheet like onboarding's folder step. It lists the usual folders that aren't

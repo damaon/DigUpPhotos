@@ -1,4 +1,4 @@
-import DigUpKit
+import DigUpCore
 import Foundation
 
 /// How much there is to index in a folder and how long the first pass takes, from `digup estimate --json` (run as

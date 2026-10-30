@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 import Testing
-@testable import DigUpKit
+@testable import DigUpCore
 
 @Suite struct PhotoStackTests {
     private let now = Date(timeIntervalSince1970: 1_700_000_000)

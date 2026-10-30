@@ -1,5 +1,5 @@
 import Testing
-@testable import DigUpKit
+@testable import DigUpCore
 
 /// What `Linear` computes, on whichever path this platform builds (Accelerate on macOS, loops elsewhere).
 @Suite struct LinearTests {

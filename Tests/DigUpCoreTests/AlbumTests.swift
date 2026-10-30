@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import DigUpKit
+@testable import DigUpCore
 
 @Suite struct AlbumTests {
     private let homeLat = 52.23

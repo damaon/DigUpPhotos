@@ -1,4 +1,4 @@
-import DigUpKit
+import DigUpCore
 import Foundation
 import LlamaRuntime
 

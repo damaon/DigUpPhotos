@@ -1,4 +1,4 @@
-import DigUpKit
+import DigUpCore
 import MapKit
 import SwiftUI
 

@@ -1,4 +1,4 @@
-import DigUpKit
+import DigUpCore
 import Foundation
 
 /// `digup mcp`: the index as an MCP server (Model Context Protocol) on stdin/stdout, for AI agents. JSON-RPC 2.0, one

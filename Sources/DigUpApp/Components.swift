@@ -1,5 +1,5 @@
 import AppKit
-import DigUpKit
+import DigUpCore
 import SwiftUI
 
 /// The app's own colors, from its icon (moss tiles around an amber D, `Resources/AppIcon`): amber marks what DigUp

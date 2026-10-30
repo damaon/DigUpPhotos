@@ -1,4 +1,4 @@
-import DigUpKit
+import DigUpCore
 import Foundation
 
 /// Where the EmbeddingGemma 2 files for llama.cpp are (see `ModelFiles` for which files, and why Q8_0).

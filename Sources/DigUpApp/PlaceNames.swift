@@ -1,5 +1,5 @@
 import CoreLocation
-import DigUpKit
+import DigUpCore
 import Foundation
 
 /// Reverse-geocoded names for trip coordinates. One lookup per neighborhood, remembered on disk.

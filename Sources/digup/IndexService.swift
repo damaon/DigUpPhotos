@@ -1,4 +1,4 @@
-import DigUpKit
+import DigUpCore
 import Foundation
 
 /// `digup index-service`: the app's indexing helper, one process per stretch of work.

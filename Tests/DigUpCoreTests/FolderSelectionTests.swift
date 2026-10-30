@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import DigUpKit
+@testable import DigUpCore
 
 @Suite final class FolderSelectionTests {
     let folder: URL = {

@@ -1,5 +1,5 @@
 import AppKit
-import DigUpKit
+import DigUpCore
 import ServiceManagement
 import UniformTypeIdentifiers
 

@@ -1,5 +1,5 @@
 import CLlama
-import DigUpKit
+import DigUpCore
 import Foundation
 
 /// EmbeddingGemma 2 on llama.cpp (Metal), in this process: the image and audio encoders (mtmd) feed the text model, and

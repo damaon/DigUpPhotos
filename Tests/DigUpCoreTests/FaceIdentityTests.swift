@@ -1,6 +1,6 @@
 import CoreGraphics
 import Testing
-@testable import DigUpKit
+@testable import DigUpCore
 
 @Suite struct FaceIdentityTests {
     /// A face turned, smaller and elsewhere in the photo lands on the template: what SFace was trained on.

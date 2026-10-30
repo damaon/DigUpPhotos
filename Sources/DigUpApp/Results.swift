@@ -1,5 +1,5 @@
 import AppKit
-import DigUpKit
+import DigUpCore
 
 /// One search result as the panel and the window show it: a file, the part of it that matched, and why.
 struct ResultRow: Identifiable, Equatable {

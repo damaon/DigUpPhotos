@@ -1,7 +1,7 @@
 import AVFoundation
 import AVKit
 import AppKit
-import DigUpKit
+import DigUpCore
 import Observation
 import PDFKit
 import Quartz

@@ -1,5 +1,5 @@
 import AppKit
-import DigUpKit
+import DigUpCore
 import SwiftUI
 
 /// The sparkle in the search field. Yellow while a question is rewritten; a click turns that on or off.

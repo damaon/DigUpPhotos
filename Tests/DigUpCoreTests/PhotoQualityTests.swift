@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 import Testing
-@testable import DigUpKit
+@testable import DigUpCore
 
 @Suite struct PhotoQualityTests {
     @Test func flatGrayScoresLow() {
