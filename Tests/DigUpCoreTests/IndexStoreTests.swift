@@ -43,7 +43,8 @@ import Testing
         let options = IndexOptions()
         let source = "test-model"
         try store.setMeta("fingerprint", "\(source) | \(options.vectorFingerprint) q1 f1")
-        let indexer = try Indexer(store: store, options: options, makeEmbedder: { () throws -> any Embedder in
+        let indexer = try Indexer(store: store, options: options, reader: AppleMedia(),
+                                  makeEmbedder: { () throws -> any Embedder in
             throw IndexerError.fingerprintMismatch(index: "", now: "")
         })
         indexer.embedderSource = source
@@ -81,7 +82,8 @@ import Testing
         try store.storeEmbedding(sha: "abc", stamp: oldStamp, kind: "image", slot: "b140", vector: [0.5, 0.5])
         try store.setMeta("fingerprint", "\(oldStamp) q2 f1")
         options.photoBudget = 280
-        let indexer = try Indexer(store: store, options: options, makeEmbedder: { () throws -> any Embedder in
+        let indexer = try Indexer(store: store, options: options, reader: AppleMedia(),
+                                  makeEmbedder: { () throws -> any Embedder in
             throw IndexerError.fingerprintMismatch(index: "", now: "")
         })
         indexer.embedderSource = source
@@ -155,7 +157,7 @@ import Testing
         try FileManager.default.createDirectory(at: drive, withIntermediateDirectories: true)
         try Data("notes from the trip".utf8).write(to: drive.appendingPathComponent("notes.txt"))
         let store = try IndexStore(directory: base.appendingPathComponent("index"))
-        let indexer = try Indexer(store: store, options: IndexOptions(),
+        let indexer = try Indexer(store: store, options: IndexOptions(), reader: AppleMedia(),
                                   makeEmbedder: { throw WorkerError.notFound("no model needed to sync") })
         #expect(try indexer.sync([drive]).added == 1)
         try FileManager.default.moveItem(at: drive, to: base.appendingPathComponent("ejected"))

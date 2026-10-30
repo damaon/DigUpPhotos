@@ -5,42 +5,12 @@ import PDFKit
 import UniformTypeIdentifiers
 import Vision
 
-enum ExtractError: Error, CustomStringConvertible {
-    case unreadable(String)
-    case tooSmall(Int, Int)
-    case locked
-    case empty(String)
-    /// Not for the index after all, once read (code that a program made, or that holds a private key).
-    case leftOut(String)
-
-    var description: String {
-        switch self {
-        case .unreadable(let why): "unreadable: \(why)"
-        case .tooSmall(let width, let height): "small image \(width)×\(height)"
-        case .locked: "password-protected"
-        case .empty(let why): why
-        case .leftOut(let why): why
-        }
-    }
-}
-
 enum ImageExtractor {
-    struct Prepared: Sendable {
-        let path: String
-        let width: Int
-        let height: Int
-        let capture: CaptureInfo
-        /// Local look score for photos (`PhotoQuality`); nil for screenshots.
-        let quality: PhotoQuality?
-        /// Face crops for people matching; empty for screenshots.
-        let faces: [DetectedFace]
-    }
-
     /// Writes a downscaled copy for the model. ImageIO decodes straight to the thumbnail size, so a 48 MP photo never
     /// gets decoded at full resolution. HEIC, RAW, WebP and friends all work. Capture date and GPS stay with the
     /// original file's properties (not the thumbnail). Photos also get a local quality score and face crops.
     static func prepare(_ url: URL, maxPixel: Int, minSide: Int, to folder: URL, png: Bool,
-                        scoreQuality: Bool = false, detectFaces: Bool = false) throws -> Prepared {
+                        scoreQuality: Bool = false, detectFaces: Bool = false) throws -> PreparedImage {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
         else { throw ExtractError.unreadable("not an image") }
         let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
@@ -64,7 +34,7 @@ enum ImageExtractor {
         try write(thumbnail, to: out, png: png)
         let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
         let gps = CaptureInfo.gps(from: properties)
-        return Prepared(path: out.path, width: width, height: height,
+        return PreparedImage(path: out.path, width: width, height: height,
                         capture: CaptureInfo(taken: exif?[kCGImagePropertyExifDateTimeOriginal] as? String,
                                              latitude: gps?.latitude, longitude: gps?.longitude),
                         quality: quality, faces: faces)
@@ -108,26 +78,16 @@ enum OCR {
 }
 
 enum PDFExtractor {
-    struct Page: Sendable {
-        let number: Int        // 1-based
-        let text: String       // may be empty for scans
-        let imagePath: String? // set when the page had too little text and was rendered for the vision encoder
-        var ocr = false        // the text came from OCR: the text layer was garbled (`PageTextProblem.lostLetters`)
-        /// Text read in glyph order (`PageTextProblem.glyphOrder`): too garbled to show or match words against, but
-        /// enough of its words survive for a meaning vector beside the page's picture.
-        var garbled: String?
-    }
-
     /// Reads the pages in `range(pageCount)` (0-based). Pages with real text become text; scans and slides are
     /// rendered. Text layers PDFKit reads garbled are replaced: by OCR where letters were lost (Arabic ligatures), by
     /// the rendered page where the words came out in glyph order (Bengali, which OCR can't read). On the multilingual
     /// eval (2026-10-08), a glyph-order page as picture + garbled-text vector beat the picture alone: R@1 0.75 vs 0.73,
     /// MRR 0.84 vs 0.81 (an English query for a Bengali page found it only through the text vector).
     static func pages(of url: URL, range: (Int) -> Range<Int>, minText: Int, renderPixels: Int, to folder: URL)
-        throws -> (pages: [Page], total: Int, title: String?) {
+        throws -> (pages: [DocumentPage], total: Int, title: String?) {
         guard let document = PDFDocument(url: url) else { throw ExtractError.unreadable("can't open PDF") }
         if document.isLocked { throw ExtractError.locked }
-        var pages: [Page] = []
+        var pages: [DocumentPage] = []
         for index in range(document.pageCount).clamped(to: 0..<document.pageCount) {
             guard let page = document.page(at: index) else { continue }
             var text = (page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -139,26 +99,26 @@ enum PDFExtractor {
                     let read = OCR.text(in: image).trimmingCharacters(in: .whitespacesAndNewlines)
                     if read.count >= minText, PageTextProblem.check(read) == nil,
                        read.unicodeScalars.contains(where: { Script.arabic.contains($0.value) }) {
-                        pages.append(Page(number: index + 1, text: read, imagePath: nil, ocr: true))
+                        pages.append(DocumentPage(number: index + 1, text: read, imagePath: nil, ocr: true))
                         continue
                     }
                 }
                 if text.count >= minText {
-                    pages.append(Page(number: index + 1, text: text, imagePath: nil))
+                    pages.append(DocumentPage(number: index + 1, text: text, imagePath: nil))
                     continue
                 }
             case .glyphOrder:
                 (text, garbled) = ("", text)
             case nil:
                 if text.count >= minText {
-                    pages.append(Page(number: index + 1, text: text, imagePath: nil))
+                    pages.append(DocumentPage(number: index + 1, text: text, imagePath: nil))
                     continue
                 }
             }
             guard let image = render(page, pixels: renderPixels) else { continue }
             let out = folder.appendingPathComponent(UUID().uuidString + ".png")
             try ImageExtractor.write(image, to: out, png: true)
-            pages.append(Page(number: index + 1, text: text, imagePath: out.path, garbled: garbled))
+            pages.append(DocumentPage(number: index + 1, text: text, imagePath: out.path, garbled: garbled))
         }
         let title = document.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String
         return (pages, document.pageCount, title)

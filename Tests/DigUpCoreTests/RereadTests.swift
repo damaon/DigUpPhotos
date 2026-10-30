@@ -50,7 +50,7 @@ import UniformTypeIdentifiers
         var options = IndexOptions()
         options.kinds = [.image, .video]
         let embedder = FakeEmbedder()
-        let indexer = try Indexer(store: store, options: options, makeEmbedder: { embedder })
+        let indexer = try Indexer(store: store, options: options, reader: AppleMedia(), makeEmbedder: { embedder })
         indexer.embedderSource = embedder.info.vectorSource
         indexer.resetOnModelChange = { _, _, _ in }
         _ = try indexer.sync([files])

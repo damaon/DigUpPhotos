@@ -115,10 +115,11 @@ import Testing
         }
         let root = folder.appendingPathComponent("F")
         let candidates = Crawler.crawl([root], options: IndexOptions()).candidates
-        let parts = Estimator.estimates(bySubfolder: candidates, of: root.path, options: IndexOptions())
+        let parts = Estimator.estimates(bySubfolder: candidates, of: root.path, options: IndexOptions(),
+                                        reader: AppleMedia())
         #expect(Set(parts.keys) == [root.path, root.path + "/A", root.path + "/B"])
         #expect(parts[root.path + "/A"]?.files[.doc] == 2)
-        let whole = Estimator.estimate(candidates, options: IndexOptions())
+        let whole = Estimator.estimate(candidates, options: IndexOptions(), reader: AppleMedia())
         #expect(abs(parts.values.reduce(Estimate(), +).seconds - whole.seconds) < 1e-9)
     }
 
@@ -130,7 +131,8 @@ import Testing
         let given = folder.appendingPathComponent("F").standardizedFileURL
         #expect(!given.path.hasPrefix("/private"))
         let candidates = Crawler.crawl([given], options: IndexOptions()).candidates
-        let parts = Estimator.estimates(bySubfolder: candidates, of: given.path, options: IndexOptions())
+        let parts = Estimator.estimates(bySubfolder: candidates, of: given.path, options: IndexOptions(),
+                                        reader: AppleMedia())
         #expect(Array(parts.keys) == [given.path + "/A"])
         var options = IndexOptions()
         options.excludedFolders = [given.path + "/A"]

@@ -14,8 +14,8 @@ public enum IndexerError: Error, CustomStringConvertible {
 
 /// Keeps the index in step with the chosen folders, then extracts and embeds whatever is pending.
 ///
-/// Model work goes to an `Embedder` (made on first use, freed by `closeWorker`). Extraction (ImageIO, Vision, PDFKit,
-/// AVFoundation) runs on a second thread one batch ahead, so reading files and embedding them overlap (see `run`).
+/// Model work goes to an `Embedder` (made on first use, freed by `closeWorker`). Reading files (`MediaReading`: on
+/// macOS ImageIO, Vision, PDFKit, AVFoundation) runs on a second thread one batch ahead, so reading files and embedding them overlap (see `run`).
 public final class Indexer {
     public struct SyncSummary: Sendable {
         public var added = 0, changed = 0, moved = 0, removed = 0, unchanged = 0
@@ -39,6 +39,8 @@ public final class Indexer {
     private let makeEmbedder: () throws -> any Embedder
     private var worker: (any Embedder)?
     private let scratch: URL
+    /// Reads pictures, PDFs, documents, sound and video (`AppleMedia` on macOS).
+    private let reader: any MediaReading
 
     /// When set, an index built with another model or other settings is emptied and read again (the app: a new
     /// version may bring a new model), and this hears about it. `reuseEmbeddings` is true when the model and the
@@ -50,9 +52,11 @@ public final class Indexer {
     /// then `checkModel()` can notice a new model before anything needs embedding.
     public var embedderSource: String?
 
-    public init(store: IndexStore, options: IndexOptions, makeEmbedder: @escaping () throws -> any Embedder) throws {
+    public init(store: IndexStore, options: IndexOptions, reader: any MediaReading,
+                makeEmbedder: @escaping () throws -> any Embedder) throws {
         self.store = store
         self.options = options
+        self.reader = reader
         self.makeEmbedder = makeEmbedder
         // One folder per process ($TMPDIR/DigUp-<pid>, which the helper clears up after a process that died), and one
         // in it per indexer: the helper runs two (the main index and the code index), and each clears its own away.
@@ -405,7 +409,7 @@ public final class Indexer {
         case nothing
         case images(screenshot: Bool, ready: [ReadyImage])
         /// `read`: the pages read (from 0) of the PDF's `total`.
-        case pdf(pages: [PDFExtractor.Page], read: Range<Int>, total: Int, title: String?)
+        case pdf(pages: [DocumentPage], read: Range<Int>, total: Int, title: String?)
         /// `chunks`: the ones in `read` (from 0) of the document's `total` (counted up to `IndexOptions.maxChunks` + 1).
         case doc(chunks: [String], read: Range<Int>, total: Int, characters: Int)
         case audio(pieces: [MediaPiece], duration: Double)
@@ -414,7 +418,7 @@ public final class Indexer {
 
     struct ReadyImage: Sendable {
         let slot: Int
-        let image: ImageExtractor.Prepared
+        let image: PreparedImage
         let ocr: String
     }
 
@@ -441,14 +445,14 @@ public final class Indexer {
     private func prepare(_ job: Job) -> PendingBatch {
         let pending = PendingBatch()
         jobsPrepared += 1
-        let (options, folder) = (options, scratch.appendingPathComponent("batch-\(jobsPrepared)"))
+        let (options, reader, folder) = (options, reader, scratch.appendingPathComponent("batch-\(jobsPrepared)"))
         preparing.async {
-            pending.fulfill(Self.prepare(job, options: options, into: folder))
+            pending.fulfill(Self.prepare(job, options: options, reader: reader, into: folder))
         }
         return pending
     }
 
-    static func prepare(_ job: Job, options: IndexOptions, into folder: URL) -> Prepared {
+    static func prepare(_ job: Job, options: IndexOptions, reader: any MediaReading, into folder: URL) -> Prepared {
         let batch = job.files
         var prepared = Prepared(batch: batch, step: job.step, folder: folder)
         let url = URL(fileURLWithPath: batch[0].path)
@@ -461,11 +465,10 @@ public final class Indexer {
                 for (slot, file) in batch.enumerated() {
                     let url = URL(fileURLWithPath: file.path)
                     do {
-                        let image = try ImageExtractor.prepare(url, maxPixel: screenshot ? 1536 : 1024,
-                                                               minSide: options.minImageSide, to: folder,
-                                                               png: screenshot, scoreQuality: !screenshot,
-                                                               detectFaces: !screenshot)
-                        let ocr = screenshot ? ImageExtractor.fullImage(url).map(OCR.text(in:)) ?? "" : ""
+                        let image = try reader.image(url, maxPixel: screenshot ? 1536 : 1024,
+                                                     minSide: options.minImageSide, to: folder, png: screenshot,
+                                                     scoreQuality: !screenshot, detectFaces: !screenshot)
+                        let ocr = screenshot ? reader.screenText(of: url) : ""
                         ready.append(ReadyImage(slot: slot, image: image, ocr: ocr))
                     } catch let error as ExtractError {
                         if case .tooSmall = error {
@@ -479,7 +482,7 @@ public final class Indexer {
             case .pdf:
                 // Long PDFs (books) get their first pages now and the rest after everything else.
                 var wanted = 0..<0
-                let read = try PDFExtractor.pages(of: url, range: { total in
+                let read = try reader.pdfPages(of: url, range: { total in
                     wanted = (job.step ?? (total > options.bigPDFPages ? 0..<options.pdfStep : 0..<options.maxPages))
                         .clamped(to: 0..<min(total, options.maxPages))
                     return wanted
@@ -487,7 +490,7 @@ public final class Indexer {
                 prepared.payload = .pdf(pages: read.pages, read: wanted, total: read.total, title: read.title)
             case .doc:
                 // The chunks are cut the same way every time, so a later step goes on where the last one stopped.
-                let text = try DocExtractor.text(of: url)
+                let text = try reader.documentText(of: url)
                 let chunks = DocExtractor.chunks(text, limit: options.maxChunks + 1)
                 let read = (job.step ?? 0..<options.docStep).clamped(to: 0..<min(chunks.count, options.maxChunks))
                 prepared.payload = .doc(chunks: Array(chunks[read]), read: read, total: chunks.count,
@@ -495,17 +498,17 @@ public final class Indexer {
             case .audio:
                 let (window, hop) = (options.audioWindow, options.audioHop)
                 let (pieces, duration) = try runBlocking {
-                    try await AudioExtractor.windows(of: url, window: window, hop: hop, to: folder)
+                    try await reader.audioWindows(of: url, window: window, hop: hop, to: folder)
                 }
                 prepared.payload = .audio(pieces: pieces, duration: duration)
             case .video:
                 let (interval, window, hop) = (options.frameInterval, options.audioWindow, options.audioHop)
-                let capture = MediaInfo.capture(of: url)
+                let capture = reader.capture(of: url)
                 let (frames, duration, hasAudio) = try runBlocking {
-                    try await VideoExtractor.keyframes(of: url, every: interval, maxPixel: 1024, to: folder)
+                    try await reader.keyframes(of: url, every: interval, maxPixel: 1024, to: folder)
                 }
                 let sound = hasAudio
-                    ? try runBlocking { try await AudioExtractor.windows(of: url, window: window, hop: hop, to: folder) }
+                    ? try runBlocking { try await reader.audioWindows(of: url, window: window, hop: hop, to: folder) }
                         .pieces
                     : []
                 prepared.payload = .video(frames: frames, sound: sound, duration: duration, capture: capture)
@@ -645,7 +648,7 @@ public final class Indexer {
 
     /// Pages `read` of a PDF (all of a short one, a step of a long one). A long one stays `partial` with `read_to` and
     /// `read_end` (pages, from 0) in its info until its last step.
-    private func pdf(_ file: FileRecord, pages: [PDFExtractor.Page], read: Range<Int>, total: Int, title: String?,
+    private func pdf(_ file: FileRecord, pages: [DocumentPage], read: Range<Int>, total: Int, title: String?,
                      later: Bool) throws -> (String, String?) {
         let end = min(total, options.maxPages)
         let unread = read.upperBound < end

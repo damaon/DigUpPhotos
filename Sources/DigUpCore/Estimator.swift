@@ -1,5 +1,3 @@
-import CoreGraphics
-import CoreServices
 import Foundation
 
 /// Seconds of indexing per unit, measured 2026-10-07 on an M4 Pro with llama.cpp (Q8_0), reading files while the
@@ -45,10 +43,11 @@ public struct Estimate: Sendable {
     }
 }
 
-/// First-index time from metadata alone: counts, PDF page counts and media durations come from Spotlight (falling
-/// back to the file header when Spotlight hasn't seen a file yet), so nothing is decoded.
+/// First-index time from metadata alone: counts, and PDF page counts and media durations from `reader` (on macOS,
+/// Spotlight, falling back to the file header when Spotlight hasn't seen a file yet), so nothing is decoded.
 public enum Estimator {
-    public static func estimate(_ candidates: [Candidate], options: IndexOptions, costs: Costs = Costs()) -> Estimate {
+    public static func estimate(_ candidates: [Candidate], options: IndexOptions, costs: Costs = Costs(),
+                                reader: any MediaReading) -> Estimate {
         var estimate = Estimate()
         for file in candidates {
             estimate.files[file.kind, default: 0] += 1
@@ -56,7 +55,7 @@ public enum Estimator {
             case .image: estimate.seconds += costs.image
             case .screenshot: estimate.seconds += costs.screenshot
             case .pdf:
-                let total = pages(of: file.path)
+                let total = reader.pageCount(of: URL(fileURLWithPath: file.path)) ?? 1
                 let all = min(total, options.maxPages)
                 let first = total > options.bigPDFPages ? min(options.pdfStep, all) : all
                 estimate.pdfPagesTotal += total
@@ -76,11 +75,11 @@ public enum Estimator {
                     estimate.laterSeconds += Double(all - first) * costs.docChunk
                 }
             case .audio:
-                let seconds = duration(of: file.path)
+                let seconds = reader.duration(of: URL(fileURLWithPath: file.path)) ?? 0
                 estimate.audioSeconds += seconds
                 estimate.seconds += seconds * costs.audioSecond
             case .video:
-                let seconds = duration(of: file.path)
+                let seconds = reader.duration(of: URL(fileURLWithPath: file.path)) ?? 0
                 estimate.videoSeconds += seconds
                 estimate.seconds += seconds * costs.videoSecond
             }
@@ -92,7 +91,7 @@ public enum Estimator {
     /// the same look at each file: the folder lists show where a big first pass comes from.
     /// Subfolders are named under `folder` as given, though the walk reports real paths (/private/var for /var).
     public static func estimates(bySubfolder candidates: [Candidate], of folder: String, options: IndexOptions,
-                                 costs: Costs = Costs()) -> [String: Estimate] {
+                                 costs: Costs = Costs(), reader: any MediaReading) -> [String: Estimate] {
         let prefix = folder.hasSuffix("/") ? folder : folder + "/"
         let real = FolderSelection.realPath(folder) + "/"
         var groups: [String: [Candidate]] = [:]
@@ -102,21 +101,6 @@ public enum Estimator {
             let key = rest.flatMap { rest in rest.firstIndex(of: "/").map { prefix + rest[..<$0] } } ?? folder
             groups[key, default: []].append(file)
         }
-        return groups.mapValues { estimate($0, options: options, costs: costs) }
-    }
-
-    static func pages(of path: String) -> Int {
-        if let pages = spotlight(path, kMDItemNumberOfPages), pages > 0 { return Int(pages) }
-        return CGPDFDocument(URL(fileURLWithPath: path) as CFURL)?.numberOfPages ?? 1
-    }
-
-    static func duration(of path: String) -> Double {
-        if let seconds = spotlight(path, kMDItemDurationSeconds), seconds > 0 { return seconds }
-        return MediaInfo.duration(of: URL(fileURLWithPath: path)) ?? 0
-    }
-
-    private static func spotlight(_ path: String, _ attribute: CFString) -> Double? {
-        guard let item = MDItemCreate(kCFAllocatorDefault, path as CFString) else { return nil }
-        return (MDItemCopyAttribute(item, attribute) as? NSNumber)?.doubleValue
+        return groups.mapValues { estimate($0, options: options, costs: costs, reader: reader) }
     }
 }

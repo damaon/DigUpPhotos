@@ -21,7 +21,7 @@ import Testing
     var files: URL { folder.appendingPathComponent("files") }
 
     func indexer(_ store: IndexStore, _ embedder: FakeEmbedder, options: IndexOptions = IndexOptions()) throws -> Indexer {
-        try Indexer(store: store, options: options, makeEmbedder: { embedder })
+        try Indexer(store: store, options: options, reader: AppleMedia(), makeEmbedder: { embedder })
     }
 
     func store() throws -> IndexStore { try IndexStore(directory: folder.appendingPathComponent("index")) }
@@ -225,7 +225,7 @@ import Testing
             Candidate(path: $0.path, kind: .pdf, size: 10, mtime: 1, inode: 1, device: 1)
         }
         let costs = Costs()
-        let estimate = Estimator.estimate(candidates, options: IndexOptions(), costs: costs)
+        let estimate = Estimator.estimate(candidates, options: IndexOptions(), costs: costs, reader: AppleMedia())
         #expect(estimate.pdfPages == 33)
         #expect(estimate.pdfPagesTotal == 123)
         #expect(estimate.longFiles == 1)
