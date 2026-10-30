@@ -19,13 +19,18 @@ public struct SearchHit: Sendable {
     public let modified: Double
     public let size: Int64
     public let info: [String: String]
+    /// Here because its picture or text means what was asked (at `Searcher.search`'s gates), not only for its words.
+    public var matchedMeaning = false
+    /// How far its cosine is above the query's average (z × the scale's deviation; `Searcher.minLift`).
+    public var lift: Double?
 }
 
 /// Hybrid search: meaning (EmbeddingGemma's vectors) + words (FTS5).
 ///
 /// Meaning is the model's cosine similarity, put on one scale per query (`meaning`): every vector is scored anyway, so
-/// the distribution comes for free, and only segments that stand out (`zGate`) count as meaning matches. That also
-/// gives an honest "nothing found". Words rescue what a vector can't hold exactly: codes, IDs and names.
+/// the distribution comes for free, and only segments that stand out (`zGate`) and are close enough to the query
+/// (`minLift`) count as meaning matches. That also gives an honest "nothing found". Words rescue what a vector can't
+/// hold exactly: codes, IDs and names.
 public final class Searcher {
     let store: IndexStore
     private var matrix: VectorStorage?   // rows × 768 float16, row-major
@@ -103,10 +108,25 @@ public final class Searcher {
     /// How much finding the query's words counts against meaning (`search`).
     public static let wordWeight = 2.0
 
+    /// How far above the query's average cosine (its `meaning` scale's center) a segment must be to match it. Standing
+    /// out (`zGate`) alone let everything through: a library has no giraffe, but its top 2% for "giraffe" still stand
+    /// out, so every query found 50 or more photos. On 58 queries over 13,389 vectors (2026-10-30), the best photo for
+    /// what wasn't there sat 0.075 ("asdf qwer zxcv") to 0.095 (tiger, "latarnia morska") above it, and for what was,
+    /// 0.096 ("plaża") to 0.19: Polish words land lower than English ones ("kot" 0.101, "cat" 0.151). 0.09 keeps every
+    /// one that was there and leaves a few weak matches, not 60, for the closest misses.
+    public static let minLift = 0.09
+
+    /// The z a segment needs to match on a query whose scale has this `deviation`: `zGate`, or more when the query's
+    /// scores are spread so narrowly that standing out is less than `minLift`.
+    static func gate(_ zGate: Double, deviation: Double, minLift: Double = minLift) -> Double {
+        max(zGate, minLift / deviation)
+    }
+
     /// Hybrid search. `people`: only photos that contain every listed person on the same image (AND). Nil or empty
     /// means no people filter.
     public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil,
-                       people: Set<Int64>? = nil, limit: Int = 20, zGate: Double = 2.0, wordWeight: Double? = nil,
+                       people: Set<Int64>? = nil, limit: Int = 20, zGate: Double = 2.0,
+                       minLift: Double = Searcher.minLift, wordWeight: Double? = nil,
                        prefixLast: Bool = false, clauseVectors: [[Float]] = []) throws -> [SearchHit] {
         let wordWeight = wordWeight ?? Self.wordWeight
         if queryVector != nil, !vectorsLoaded { try reload() }
@@ -121,9 +141,13 @@ public final class Searcher {
 
         // Meaning: score every vector on this query's scale (`meaning`), keep each file's best segment.
         var best: [Int64: (z: Double, cosine: Double, row: Int)] = [:]
+        var meaningGate = zGate, deviation = 0.0
         if let query = queryVector, query.count == Vectors.dimension, !rowFile.isEmpty {
             let scores = score(query)
-            let meaning = Self.meaning(scores, rowModality, setsScale: rowSetsScale)
+            let scaled = Self.scale(scores, rowModality, setsScale: rowSetsScale)
+            let meaning = scaled.z
+            deviation = scaled.deviation
+            meaningGate = Self.gate(zGate, deviation: deviation, minLift: minLift)
             for row in 0..<scores.count where allowed(rowFile[row]) {
                 let z = meaning[row]
                 if z > (best[rowFile[row]]?.z ?? -.infinity) { best[rowFile[row]] = (z, Double(scores[row]), row) }
@@ -177,11 +201,12 @@ public final class Searcher {
         if boolean {
             // Each phrase is its own embedding. `and` keeps a photo only when every part matches, `or` when any
             // does, and `-` drops a photo whose picture matches that embedding.
-            let clauses = clauseVectors.map { matches(for: $0, allowed: allowed) }
+            let clauses = clauseVectors.map { matches(for: $0, zGate: zGate, minLift: minLift, allowed: allowed) }
             var matched: [Int64: (score: Double, z: Double, cosine: Double, row: Int)] = [:]
-            let files = Set(clauses.flatMap(\.keys))
+            let files = Set(clauses.flatMap(\.best.keys))
             for file in files where allowed(file) {
-                if let hit = Self.evaluate(parsed.expression, file: file, clauses: clauses, gate: zGate) {
+                if let hit = Self.evaluate(parsed.expression, file: file, clauses: clauses.map(\.best),
+                                           gates: clauses.map(\.gate)) {
                     matched[file] = hit
                 }
             }
@@ -195,7 +220,7 @@ public final class Searcher {
             }
             keywordHits = []
         } else {
-            var candidates = Set(best.filter { $0.value.z >= zGate }.keys)
+            var candidates = Set(best.filter { $0.value.z >= meaningGate }.keys)
             for (file, share) in coverage where share >= 0.5 { candidates.insert(file) }
             let quality = try photoQuality(of: candidates, kinds: fileKind)
             for file in candidates {
@@ -217,7 +242,8 @@ public final class Searcher {
             let semantic = best[file]
             let keyword = wordRank[file]
             // Point at the best meaning segment if it stands out; else at the segment the words matched.
-            let useMeaning = semantic.map { $0.z >= zGate || keyword == nil } ?? false
+            let meant = boolean || semantic.map { $0.z >= meaningGate } ?? false
+            let useMeaning = semantic.map { _ in meant || keyword == nil } ?? false
             guard let segmentID = useMeaning ? semantic.map({ rowSegment[$0.row] }) : keyword?.1.segment else { continue }
             var path = "", kind = FileKind.doc, modified = 0.0, size: Int64 = 0, info: [String: String] = [:]
             try store.db.query("SELECT path, kind, mtime, size, info FROM files WHERE id = ?", [.int(file)]) {
@@ -252,7 +278,9 @@ public final class Searcher {
             hits.append(SearchHit(path: path, kind: kind, score: score, z: semantic?.z, cosine: semantic?.cosine,
                                   keywordRank: keyword?.0, segment: segment, segmentID: segmentID, loc: loc,
                                   locEnd: locEnd,
-                                  excerpt: snippet ?? storedExcerpt, modified: modified, size: size, info: info))
+                                  excerpt: snippet ?? storedExcerpt, modified: modified, size: size, info: info,
+                                  matchedMeaning: meant && semantic != nil,
+                                  lift: deviation > 0 ? semantic.map { $0.z * deviation } : nil))
         }
         return PhotoCopies.one(hits, path: \.path, isPhoto: { $0.kind == .image })
     }
@@ -293,22 +321,35 @@ public final class Searcher {
     /// How many of `hits` (best first) are strong: scoring at least `ratio` × the top hit. The rest pass the gates but
     /// trail far behind, and the app folds them under "weaker matches". On both evals (2026-10-07), 0.5 cut the list
     /// from 26.2 to 5.7 results per query and never folded an expected answer.
+    ///
+    /// A meaning match also trails when it's `foldLift` less close to the query than the closest: past the gates, a big
+    /// library still has a hundred photos for "cat" or "elephant", and the last ones were screenshots and rooms
+    /// (2026-10-30). Hits stay in score order, so the first that trails ends the strong ones.
     public static func strongCount(_ hits: [SearchHit], ratio: Double = 0.5) -> Int {
         guard let top = hits.first?.score, top > 0 else { return hits.count }
-        return hits.prefix { $0.score >= top * ratio }.count
+        let closest = hits.compactMap { $0.matchedMeaning ? $0.lift : nil }.max()
+        return hits.prefix { hit in
+            hit.score >= top * ratio
+                && (hit.keywordRank != nil || !hit.matchedMeaning || closest.map { hit.lift ?? 0 >= $0 - foldLift } ?? true)
+        }.count
     }
 
-    /// One clause's best segment per file. `allowed` is the kind and people filter from `search`.
-    private func matches(for vector: [Float], allowed: (Int64) -> Bool) -> [Int64: (z: Double, cosine: Double, row: Int)] {
-        guard vector.count == Vectors.dimension, !rowFile.isEmpty else { return [:] }
+    /// How much less close than the closest a meaning match can be and still be strong (`strongCount`).
+    public static let foldLift = 0.04
+
+    /// One clause's best segment per file, and the z it needs to match (`gate`). `allowed` is the kind and people
+    /// filter from `search`.
+    private func matches(for vector: [Float], zGate: Double, minLift: Double, allowed: (Int64) -> Bool)
+        -> (best: [Int64: (z: Double, cosine: Double, row: Int)], gate: Double) {
+        guard vector.count == Vectors.dimension, !rowFile.isEmpty else { return ([:], zGate) }
         let scores = score(vector)
-        let meaning = Self.meaning(scores, rowModality, setsScale: rowSetsScale)
+        let (meaning, deviation) = Self.scale(scores, rowModality, setsScale: rowSetsScale)
         var best: [Int64: (z: Double, cosine: Double, row: Int)] = [:]
         for row in 0..<scores.count where allowed(rowFile[row]) {
             let z = meaning[row]
             if z > (best[rowFile[row]]?.z ?? -.infinity) { best[rowFile[row]] = (z, Double(scores[row]), row) }
         }
-        return best
+        return (best, Self.gate(zGate, deviation: deviation, minLift: minLift))
     }
 
     /// Cosine similarity of `query` with every stored vector (all are L2-normalized): a matrix-vector product, done a
@@ -345,6 +386,12 @@ public final class Searcher {
     /// text average down for every query, and documents rose over screenshots everywhere (2026-10-09, the testbed's long
     /// files finished: real eval 24 → 22 of 26 first; 24 with the scale kept).
     static func meaning(_ scores: [Float], _ modality: [Modality], setsScale: [Bool]? = nil) -> [Double] {
+        scale(scores, modality, setsScale: setsScale).z
+    }
+
+    /// `meaning`, and the deviation it divides by: a z times it is how far above the query's average a segment is.
+    static func scale(_ scores: [Float], _ modality: [Modality], setsScale: [Bool]? = nil)
+        -> (z: [Double], deviation: Double) {
         let means = modalityMeans(scores, modality, setsScale: setsScale)
         let centered = zip(scores, modality).map { Double($0) - means[$1, default: 0] }
         var count = 0.0, sum = 0.0
@@ -358,7 +405,7 @@ public final class Searcher {
             squares += (centered[row] - mean) * (centered[row] - mean)
         }
         let deviation = max((squares / max(count, 1)).squareRoot(), 0.02)
-        return centered.map { ($0 - mean) / deviation }
+        return (centered.map { ($0 - mean) / deviation }, deviation)
     }
 
     /// The average score of each modality for this query. Small groups (< 20 vectors) take the average of all.
@@ -448,10 +495,10 @@ public final class Searcher {
         return ParsedQuery(expression: parser.parseOr(), hasOperators: true)
     }
 
-    /// Whether `file` satisfies `expr`. `clauses` lines up with `expr.phrases`. A phrase matches at `gate`.
+    /// Whether `file` satisfies `expr`. `clauses` and `gates` line up with `expr.phrases`: a phrase matches at its gate.
     /// `and` requires every part; `or` any part; `not` hides a match instead of ranking it lower.
     static func evaluate(_ expr: QueryExpr, file: Int64,
-                         clauses: [[Int64: (z: Double, cosine: Double, row: Int)]], gate: Double)
+                         clauses: [[Int64: (z: Double, cosine: Double, row: Int)]], gates: [Double])
         -> (score: Double, z: Double, cosine: Double, row: Int)? {
         var index = 0
         func walk(_ expr: QueryExpr) -> (ok: Bool, score: Double, z: Double, cosine: Double, row: Int?) {
@@ -459,8 +506,8 @@ public final class Searcher {
             case .phrase:
                 let slot = index
                 index += 1
-                guard slot < clauses.count, let hit = clauses[slot][file] else { return (false, 0, 0, 0, nil) }
-                return (hit.z >= gate, hit.z, hit.z, hit.cosine, hit.row)
+                guard slot < clauses.count, slot < gates.count, let hit = clauses[slot][file] else { return (false, 0, 0, 0, nil) }
+                return (hit.z >= gates[slot], hit.z, hit.z, hit.cosine, hit.row)
             case .not(let inner):
                 let inner = walk(inner)
                 return (!inner.ok, 0, 0, 0, nil)
@@ -700,3 +747,4 @@ public final class Searcher {
         return quality
     }
 }
+

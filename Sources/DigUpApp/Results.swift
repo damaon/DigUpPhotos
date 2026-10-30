@@ -34,7 +34,7 @@ struct ResultRow: Identifiable, Equatable {
         loc = hit.loc
         locEnd = hit.locEnd
         excerpt = hit.excerpt.flatMap { $0.isEmpty ? nil : $0 }
-        matchedMeaning = (hit.z ?? 0) >= 2
+        matchedMeaning = hit.matchedMeaning
         matchedWords = hit.keywordRank != nil
         pickedPeople = hit.z == nil && hit.keywordRank == nil && hit.segment == .image
         modified = Date(timeIntervalSince1970: hit.modified)

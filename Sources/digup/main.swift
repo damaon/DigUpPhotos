@@ -32,6 +32,7 @@ let usage = """
       --exclude-ext EXT    don't index files with this extension (repeatable, or comma-separated: "heic,txt")
       --reindex            drop vectors and embed everything again (after changing settings or model)
       --zgate Z            how far a meaning match must stand out (default 2.0)
+      --minlift L          how far above the query's average cosine a meaning match must be (default 0.09)
       --word-weight W      bonus for containing all of the query's words (default 2.0)
       --shot-tokens N      vision tokens per screenshot (default 280; 560 was 2× slower, no better on real shots)
 
@@ -50,7 +51,7 @@ struct Arguments {
     var values: [String: String] = [:]
     var lists: [String: [String]] = [:]
     var flags: Set<String> = []
-    static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
+    static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--minlift", "--word-weight", "--new-limit",
                                       "--linger", "--shot-tokens", "--rename"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--person"]
 
@@ -122,6 +123,7 @@ struct Arguments {
 
     /// Dev knobs for A/B runs in evals/.
     var zGate: Double { values["--zgate"].flatMap(Double.init) ?? 2.0 }
+    var minLift: Double { values["--minlift"].flatMap(Double.init) ?? Searcher.minLift }
     var wordWeight: Double? { values["--word-weight"].flatMap(Double.init) }   // nil: the index's own (`Searcher`)
 
     func kinds() throws -> Set<FileKind>? {
@@ -337,7 +339,7 @@ func search(_ args: Arguments) throws {
     let vectors = try queryVectors(phrases, store: store, searcher: searcher)
     let encoded = Date()
     let hits = try searcher.search(query, queryVector: vectors?.first, kinds: try args.kinds(), people: try args.people(),
-                                   limit: args.values["-n"].flatMap(Int.init) ?? 10, zGate: args.zGate,
+                                   limit: args.values["-n"].flatMap(Int.init) ?? 10, zGate: args.zGate, minLift: args.minLift,
                                    wordWeight: args.wordWeight,
                                    clauseVectors: parsed.hasOperators ? (vectors ?? []) : [])
     let searched = Date()
@@ -347,6 +349,8 @@ func search(_ args: Arguments) throws {
                                       "score": hit.score]
             if let z = hit.z { row["z"] = z }
             if let cosine = hit.cosine { row["cosine"] = cosine }
+            if let lift = hit.lift { row["lift"] = lift }
+            row["meaning"] = hit.matchedMeaning
             if let rank = hit.keywordRank { row["keyword_rank"] = rank }
             if let loc = hit.loc { row["loc"] = loc }
             if let end = hit.locEnd { row["loc_end"] = end }
@@ -466,7 +470,7 @@ func evaluate(_ args: Arguments) throws {
     for (index, query) in eval.queries.enumerated() {
         let kinds = query.kind.flatMap { FileKind(rawValue: $0) }.map { Set([$0]) }
         let hits = try searcher.search(query.q, queryVector: index < vectors.count ? vectors[index] : nil, kinds: kinds,
-                                       limit: depth, zGate: args.zGate, wordWeight: args.wordWeight)
+                                       limit: depth, zGate: args.zGate, minLift: args.minLift, wordWeight: args.wordWeight)
         let strong = Searcher.strongCount(hits)
         shown += strong
         listed += hits.count
@@ -509,7 +513,7 @@ func evaluate(_ args: Arguments) throws {
               Double(row.at1) / n, Double(row.at5) / n, Double(row.at10) / n, row.mrr / n))
     }
     let count = Double(max(1, eval.queries.count))
-    print(String(format: "weaker-matches fold (below 0.5× the top score): %.1f of %.1f results shown per query; ",
+    print(String(format: "weaker-matches fold (Searcher.strongCount): %.1f of %.1f results shown per query; ",
                  Double(shown) / count, Double(listed) / count)
           + "\(folded) expected \(folded == 1 ? "answer" : "answers") folded")
 }

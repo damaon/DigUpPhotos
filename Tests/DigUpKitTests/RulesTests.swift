@@ -162,6 +162,28 @@ import Testing
         #expect(Searcher.strongCount([]) == 0)
     }
 
+    /// A meaning match also folds when it's `foldLift` less close to the query than the closest one; a match on words
+    /// doesn't.
+    @Test func meaningMatchesFoldFarBehindTheClosest() {
+        func hit(_ score: Double, lift: Double, words: Bool = false) -> SearchHit {
+            var hit = SearchHit(path: "/\(score)", kind: .image, score: score, z: 5, cosine: 0.7,
+                                keywordRank: words ? 1 : nil, segment: .image, segmentID: 1, loc: nil, locEnd: nil,
+                                excerpt: nil, modified: 0, size: 0, info: [:])
+            hit.matchedMeaning = true
+            hit.lift = lift
+            return hit
+        }
+        #expect(Searcher.strongCount([hit(6, lift: 0.16), hit(5.9, lift: 0.13), hit(5.8, lift: 0.11)]) == 2)
+        #expect(Searcher.strongCount([hit(6, lift: 0.16), hit(5.9, lift: 0.11, words: true)]) == 2)
+    }
+
+    /// Standing out isn't enough when a query's scores are bunched: it must also be `minLift` above their average.
+    @Test func meaningGateRisesWhenScoresAreBunched() {
+        #expect(Searcher.gate(2, deviation: 0.06) == 2)
+        #expect(abs(Searcher.gate(2, deviation: 0.02) - Searcher.minLift / 0.02) < 1e-9)
+        #expect(Searcher.gate(2, deviation: 0.02) > 2)
+    }
+
     @Test func nestedRootsAreCrawledOnce() throws {
         let inner = folder.appendingPathComponent("inner")
         try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)

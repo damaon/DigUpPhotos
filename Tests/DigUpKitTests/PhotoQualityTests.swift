@@ -77,15 +77,15 @@ import Testing
             1: (1, 0.1, 3), 2: (3, 0.6, 4), 3: (2.2, 0.4, 5),
         ]
         let minus = Searcher.parse("person - screenshot").expression
-        #expect(Searcher.evaluate(minus, file: 1, clauses: [person, screenshot], gate: 2) != nil)
-        #expect(Searcher.evaluate(minus, file: 2, clauses: [person, screenshot], gate: 2) == nil)
-        #expect(Searcher.evaluate(minus, file: 3, clauses: [person, screenshot], gate: 2) == nil)
+        #expect(Searcher.evaluate(minus, file: 1, clauses: [person, screenshot], gates: [2, 2]) != nil)
+        #expect(Searcher.evaluate(minus, file: 2, clauses: [person, screenshot], gates: [2, 2]) == nil)
+        #expect(Searcher.evaluate(minus, file: 3, clauses: [person, screenshot], gates: [2, 2]) == nil)
         let either = Searcher.parse("person or screenshot").expression
-        #expect(Searcher.evaluate(either, file: 1, clauses: [person, screenshot], gate: 2) != nil)
-        #expect(Searcher.evaluate(either, file: 2, clauses: [person, screenshot], gate: 2) != nil)
+        #expect(Searcher.evaluate(either, file: 1, clauses: [person, screenshot], gates: [2, 2]) != nil)
+        #expect(Searcher.evaluate(either, file: 2, clauses: [person, screenshot], gates: [2, 2]) != nil)
         let both = Searcher.parse("person and screenshot").expression
-        #expect(Searcher.evaluate(both, file: 1, clauses: [person, screenshot], gate: 2) == nil)
-        let bothHit = Searcher.evaluate(both, file: 3, clauses: [person, screenshot], gate: 2)
+        #expect(Searcher.evaluate(both, file: 1, clauses: [person, screenshot], gates: [2, 2]) == nil)
+        let bothHit = Searcher.evaluate(both, file: 3, clauses: [person, screenshot], gates: [2, 2])
         #expect(bothHit?.z == 2.2)
     }
 
