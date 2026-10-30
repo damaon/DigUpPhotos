@@ -21,6 +21,8 @@ let usage = """
       digup index-service <folder>... [--backfill] [--prune]
                                               the app's indexing helper (JSON lines; see IndexService)
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
+      digup mcp                               the index as an MCP server on stdin/stdout, for AI agents
+                                              (tools: search, photos, people, status)
 
     Options:
       --index DIR          index folder (default: ~/Library/Application Support/DigUpPhotos/index.noindex)
@@ -536,6 +538,7 @@ do {
     case "eval": try evaluate(args)
     case "index-service": exit(try indexService(args))
     case "worker": exit(workerService(args))
+    case "mcp": exit(mcpServer(args))
     default:
         print(usage)
         exit(2)

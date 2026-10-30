@@ -121,6 +121,13 @@ There's also a command-line tool, `.build/release/digup`, that indexes, searches
 (`digup --help`). `scripts/make-testbed.sh` builds a folder of test files to try it on (it needs ffmpeg), and `evals/`
 holds the queries ranking changes are measured with.
 
+`digup mcp` serves the index to AI agents over MCP (stdio): tools `search`, `photos`, `people` and `status`, on the
+index the app keeps (or `--index DIR`). For Claude Code:
+
+```sh
+claude mcp add digup -- /Applications/DigUpPhotos.app/Contents/Helpers/digup mcp
+```
+
 ## FAQ
 
 **How is this different from Spotlight?** Spotlight finds files by their names, text and metadata. DigUp also finds
