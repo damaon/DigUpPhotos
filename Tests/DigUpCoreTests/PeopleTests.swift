@@ -1,7 +1,9 @@
+#if canImport(DigUpApple)
 import CoreGraphics
+@testable import DigUpApple
+#endif
 import Foundation
 import Testing
-@testable import DigUpApple
 @testable import DigUpCore
 
 @Suite final class PeopleTests {
@@ -430,6 +432,7 @@ import Testing
         #expect(try store.people().first?.displayName == "Anna")
     }
 
+    #if canImport(DigUpApple)
     /// A person's thumbnail decodes the photo only as big as the face needs, the right way up.
     @Test func imageForAFaceIsOnlyAsBigAsItNeeds() throws {
         // 2000 × 1000, blue, with a red "face" low on the right: x 1200–1400, y 800–1000 from the top.
@@ -449,9 +452,11 @@ import Testing
         let face = try pixel(image, x: Int(0.65 * Double(image.width)), y: Int(0.9 * Double(image.height)))
         #expect(face.red > 200 && face.blue < 50)
     }
+    #endif
 
     // MARK: Helpers
 
+    #if canImport(DigUpApple)
     private func pixel(_ image: CGImage, x: Int, y: Int) throws -> (red: UInt8, blue: UInt8) {
         var bytes = [UInt8](repeating: 0, count: 4)
         let context = try #require(CGContext(data: &bytes, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
@@ -460,6 +465,7 @@ import Testing
         context.draw(image, in: CGRect(x: -x, y: -(image.height - 1 - y), width: image.width, height: image.height))
         return (bytes[0], bytes[2])
     }
+    #endif
 
     /// 4 people × 12 photos, enough faces to match new ones against. `crowd[0]` is person 0, `crowd[12]` person 1.
     @discardableResult

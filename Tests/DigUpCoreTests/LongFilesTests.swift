@@ -1,7 +1,8 @@
+// Indexes real PDFs, documents and photos: needs a MediaReading (Apple's, for now).
+#if canImport(DigUpApple)
 import AppKit
 import Foundation
 import Testing
-@testable import DigUpApple
 @testable import DigUpCore
 
 /// Long PDFs and documents: the first step in the first pass, the rest in `finishLongFiles`, and what goes with it.
@@ -22,7 +23,7 @@ import Testing
     var files: URL { folder.appendingPathComponent("files") }
 
     func indexer(_ store: IndexStore, _ embedder: FakeEmbedder, options: IndexOptions = IndexOptions()) throws -> Indexer {
-        try Indexer(store: store, options: options, reader: AppleMedia(), makeEmbedder: { embedder })
+        try Indexer(store: store, options: options, reader: testReader, makeEmbedder: { embedder })
     }
 
     func store() throws -> IndexStore { try IndexStore(directory: folder.appendingPathComponent("index")) }
@@ -226,7 +227,7 @@ import Testing
             Candidate(path: $0.path, kind: .pdf, size: 10, mtime: 1, inode: 1, device: 1)
         }
         let costs = Costs()
-        let estimate = Estimator.estimate(candidates, options: IndexOptions(), costs: costs, reader: AppleMedia())
+        let estimate = Estimator.estimate(candidates, options: IndexOptions(), costs: costs, reader: testReader)
         #expect(estimate.pdfPages == 33)
         #expect(estimate.pdfPagesTotal == 123)
         #expect(estimate.longFiles == 1)
@@ -331,3 +332,4 @@ final class FakeEmbedder: Embedder {
 
     func close() {}
 }
+#endif

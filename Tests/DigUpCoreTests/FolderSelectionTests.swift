@@ -1,6 +1,5 @@
 import Foundation
 import Testing
-@testable import DigUpApple
 @testable import DigUpCore
 
 @Suite final class FolderSelectionTests {
@@ -108,6 +107,7 @@ import Testing
         #expect(names == ["top.txt", "week1.txt"])
     }
 
+    #if canImport(DigUpApple)
     @Test func estimatesComeBySubfolder() throws {
         for path in ["F/A/a.txt", "F/A/deeper/b.txt", "F/B/c.txt", "F/loose.txt"] {
             let url = folder.appendingPathComponent(path)
@@ -117,13 +117,15 @@ import Testing
         let root = folder.appendingPathComponent("F")
         let candidates = Crawler.crawl([root], options: IndexOptions()).candidates
         let parts = Estimator.estimates(bySubfolder: candidates, of: root.path, options: IndexOptions(),
-                                        reader: AppleMedia())
+                                        reader: testReader)
         #expect(Set(parts.keys) == [root.path, root.path + "/A", root.path + "/B"])
         #expect(parts[root.path + "/A"]?.files[.doc] == 2)
-        let whole = Estimator.estimate(candidates, options: IndexOptions(), reader: AppleMedia())
+        let whole = Estimator.estimate(candidates, options: IndexOptions(), reader: testReader)
         #expect(abs(parts.values.reduce(Estimate(), +).seconds - whole.seconds) < 1e-9)
     }
+    #endif
 
+    #if canImport(DigUpApple)
     @Test func subfoldersAreNamedAsTheFolderWasGiven() throws {
         let file = folder.appendingPathComponent("F/A/a.txt")
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -133,12 +135,13 @@ import Testing
         #expect(!given.path.hasPrefix("/private"))
         let candidates = Crawler.crawl([given], options: IndexOptions()).candidates
         let parts = Estimator.estimates(bySubfolder: candidates, of: given.path, options: IndexOptions(),
-                                        reader: AppleMedia())
+                                        reader: testReader)
         #expect(Array(parts.keys) == [given.path + "/A"])
         var options = IndexOptions()
         options.excludedFolders = [given.path + "/A"]
         #expect(Crawler.crawl([given], options: options).candidates.isEmpty)
     }
+    #endif
 
     @Test func filesUnderNestedFoldersComeOnce() throws {
         let store = try IndexStore(directory: folder.appendingPathComponent("index"))

@@ -1,7 +1,10 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 import Testing
-@testable import DigUpApple
 @testable import DigUpCore
 
 @Suite final class IndexStoreTests {
@@ -34,6 +37,7 @@ import Testing
         #expect(try store.prune(keepingUnder: []) == 2)
     }
 
+    #if canImport(DigUpApple)
     @Test func embeddingCacheSurvivesAQualityReread() throws {
         let store = try IndexStore(directory: folder)
         let url = folder.appendingPathComponent("photo.jpg")
@@ -44,7 +48,7 @@ import Testing
         let options = IndexOptions()
         let source = "test-model"
         try store.setMeta("fingerprint", "\(source) | \(options.vectorFingerprint) q1 f1")
-        let indexer = try Indexer(store: store, options: options, reader: AppleMedia(),
+        let indexer = try Indexer(store: store, options: options, reader: testReader,
                                   makeEmbedder: { () throws -> any Embedder in
             throw IndexerError.fingerprintMismatch(index: "", now: "")
         })
@@ -70,7 +74,9 @@ import Testing
                                                slot: EmbeddingCache.imageSlot(budget: options.photoBudget))
         #expect(lookup?.count == original.count)
     }
+    #endif
 
+    #if canImport(DigUpApple)
     @Test func aNewEmbeddingBudgetDropsTheCache() throws {
         let store = try IndexStore(directory: folder)
         let url = folder.appendingPathComponent("photo.jpg")
@@ -83,7 +89,7 @@ import Testing
         try store.storeEmbedding(sha: "abc", stamp: oldStamp, kind: "image", slot: "b140", vector: [0.5, 0.5])
         try store.setMeta("fingerprint", "\(oldStamp) q2 f1")
         options.photoBudget = 280
-        let indexer = try Indexer(store: store, options: options, reader: AppleMedia(),
+        let indexer = try Indexer(store: store, options: options, reader: testReader,
                                   makeEmbedder: { () throws -> any Embedder in
             throw IndexerError.fingerprintMismatch(index: "", now: "")
         })
@@ -96,6 +102,7 @@ import Testing
         try store.db.query("SELECT COUNT(*) FROM embedding_cache") { cached = Int($0.int(0)) }
         #expect(cached == 0)
     }
+    #endif
 
     @Test func scopeLimitsWhatIsWaiting() throws {
         let store = try IndexStore(directory: folder)
@@ -151,6 +158,7 @@ import Testing
         #expect(ModelFiles.cachedCopy(of: ModelFiles.text, home: folder) == nil)    // not whole
     }
 
+    #if canImport(DigUpApple)
     @Test func syncKeepsTheRowsOfAFolderThatWentAway() throws {
         // The real path (/private/var/…), as the crawler reports it; resolvingSymlinksInPath() would drop "/private".
         let base = URL(fileURLWithPath: String(cString: realpath(folder.path, nil)))
@@ -158,12 +166,13 @@ import Testing
         try FileManager.default.createDirectory(at: drive, withIntermediateDirectories: true)
         try Data("notes from the trip".utf8).write(to: drive.appendingPathComponent("notes.txt"))
         let store = try IndexStore(directory: base.appendingPathComponent("index"))
-        let indexer = try Indexer(store: store, options: IndexOptions(), reader: AppleMedia(),
+        let indexer = try Indexer(store: store, options: IndexOptions(), reader: testReader,
                                   makeEmbedder: { throw WorkerError.notFound("no model needed to sync") })
         #expect(try indexer.sync([drive]).added == 1)
         try FileManager.default.moveItem(at: drive, to: base.appendingPathComponent("ejected"))
         #expect(try indexer.sync([drive]).removed == 0)   // an ejected drive is not "everything deleted"
         #expect(try store.files(under: [drive.path]).count == 1)
     }
+    #endif
 }
 

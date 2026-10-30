@@ -1,9 +1,10 @@
+// Indexes real PDFs, documents and photos: needs a MediaReading (Apple's, for now).
+#if canImport(DigUpApple)
 import CoreGraphics
 import Foundation
 import ImageIO
 import Testing
 import UniformTypeIdentifiers
-@testable import DigUpApple
 @testable import DigUpCore
 
 /// New face crops or a new quality score: only the photos that touches are read again, and search keeps working.
@@ -51,7 +52,7 @@ import UniformTypeIdentifiers
         var options = IndexOptions()
         options.kinds = [.image, .video]
         let embedder = FakeEmbedder()
-        let indexer = try Indexer(store: store, options: options, reader: AppleMedia(), makeEmbedder: { embedder })
+        let indexer = try Indexer(store: store, options: options, reader: testReader, makeEmbedder: { embedder })
         indexer.embedderSource = embedder.info.vectorSource
         indexer.resetOnModelChange = { _, _, _ in }
         _ = try indexer.sync([files])
@@ -102,3 +103,4 @@ import UniformTypeIdentifiers
         #expect(try row(store, plain).images == 0)
     }
 }
+#endif

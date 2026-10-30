@@ -1,13 +1,10 @@
-import CoreGraphics
 import Foundation
 import Testing
-@testable import DigUpApple
 @testable import DigUpCore
 
 @Suite struct PhotoQualityTests {
     @Test func flatGrayScoresLow() {
-        let image = makeGray(side: 128, value: 128)
-        let quality = PhotoQuality.assess(image, detectFaces: false)
+        let quality = PhotoQuality.assess(Self.gray(side: 128, value: 128), faceBoxes: [])
         #expect(quality.contrast < 0.15)
         #expect(quality.sharpness < 0.15)
         #expect(quality.score < 45)
@@ -17,20 +14,19 @@ import Testing
     }
 
     @Test func crispCheckerboardScoresHigherThanBlur() {
-        let crisp = makeCheckerboard(side: 128, cell: 4)
+        let crisp = Self.checkerboard(side: 128, cell: 4)
         // A coarser checkerboard still has hard edges, so Laplacian variance saturates. Blur it.
-        let soft = boxBlur(makeCheckerboard(side: 128, cell: 8), radius: 5)
-        let a = PhotoQuality.assess(crisp, detectFaces: false)
-        let b = PhotoQuality.assess(soft, detectFaces: false)
+        let soft = boxBlur(Self.checkerboard(side: 128, cell: 8), radius: 5)
+        let a = PhotoQuality.assess(crisp, faceBoxes: [])
+        let b = PhotoQuality.assess(soft, faceBoxes: [])
         #expect(a.sharpness > b.sharpness)
         #expect(a.score > b.score)
     }
 
     @Test func wellExposedBeatsClipped() {
-        let mid = makeGray(side: 64, value: 128)
-        let black = makeGray(side: 64, value: 0)
-        #expect(PhotoQuality.assess(mid, detectFaces: false).exposure
-                > PhotoQuality.assess(black, detectFaces: false).exposure)
+        let mid = Self.gray(side: 64, value: 128)
+        let black = Self.gray(side: 64, value: 0)
+        #expect(PhotoQuality.assess(mid, faceBoxes: []).exposure > PhotoQuality.assess(black, faceBoxes: []).exposure)
     }
 
     @Test func infoFieldsAndNiceQuery() {
@@ -108,17 +104,11 @@ import Testing
 
     // MARK: Synthetic images
 
-    private func makeGray(side: Int, value: UInt8) -> CGImage {
-        var pixels = [UInt8](repeating: value, count: side * side)
-        return pixels.withUnsafeMutableBytes { buffer in
-            let context = CGContext(data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8,
-                                    bytesPerRow: side, space: CGColorSpaceCreateDeviceGray(),
-                                    bitmapInfo: CGImageAlphaInfo.none.rawValue)!
-            return context.makeImage()!
-        }
+    static func gray(side: Int, value: UInt8) -> PhotoQuality.Gray {
+        PhotoQuality.Gray(width: side, height: side, pixels: [UInt8](repeating: value, count: side * side))
     }
 
-    private func makeCheckerboard(side: Int, cell: Int) -> CGImage {
+    static func checkerboard(side: Int, cell: Int) -> PhotoQuality.Gray {
         var pixels = [UInt8](repeating: 0, count: side * side)
         for y in 0..<side {
             for x in 0..<side {
@@ -126,21 +116,13 @@ import Testing
                 pixels[y * side + x] = on ? 240 : 20
             }
         }
-        return pixels.withUnsafeMutableBytes { buffer in
-            let context = CGContext(data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8,
-                                    bytesPerRow: side, space: CGColorSpaceCreateDeviceGray(),
-                                    bitmapInfo: CGImageAlphaInfo.none.rawValue)!
-            return context.makeImage()!
-        }
+        return PhotoQuality.Gray(width: side, height: side, pixels: pixels)
     }
 
     /// Averages each pixel with a square neighborhood so edges stop being one-pixel steps.
-    private func boxBlur(_ image: CGImage, radius: Int) -> CGImage {
+    private func boxBlur(_ image: PhotoQuality.Gray, radius: Int) -> PhotoQuality.Gray {
         let side = image.width
-        guard side == image.height, side > 0, let data = image.dataProvider?.data,
-              let bytes = CFDataGetBytePtr(data) else { return image }
-        var source = [UInt8](repeating: 0, count: side * side)
-        for index in 0..<source.count { source[index] = bytes[index] }
+        let source = image.pixels
         var pixels = [UInt8](repeating: 0, count: side * side)
         let window = radius * 2 + 1
         for y in 0..<side {
@@ -156,11 +138,6 @@ import Testing
                 pixels[y * side + x] = UInt8(sum / (window * window))
             }
         }
-        return pixels.withUnsafeMutableBytes { buffer in
-            let context = CGContext(data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8,
-                                    bytesPerRow: side, space: CGColorSpaceCreateDeviceGray(),
-                                    bitmapInfo: CGImageAlphaInfo.none.rawValue)!
-            return context.makeImage()!
-        }
+        return PhotoQuality.Gray(width: side, height: side, pixels: pixels)
     }
 }
