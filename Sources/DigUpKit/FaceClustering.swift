@@ -1,4 +1,3 @@
-import Accelerate
 import Foundation
 
 /// Groups face vectors into people.
@@ -29,22 +28,18 @@ enum FaceClustering {
 
     static func mean(_ vectors: [[Float]]) -> [Float] {
         var sum = [Float](repeating: 0, count: FaceIdentity.dimension)
-        for vector in vectors where vector.count == FaceIdentity.dimension { vDSP_vadd(sum, 1, vector, 1, &sum, 1, vDSP_Length(sum.count)) }
+        for vector in vectors where vector.count == FaceIdentity.dimension { Linear.add(vector, to: &sum) }
         guard !vectors.isEmpty else { return sum }
         return sum.map { $0 / Float(vectors.count) }
     }
 
     /// `vector` minus the average face, L2-normalized.
     static func centered(_ vector: [Float], mean: [Float]) -> [Float] {
-        var out = [Float](repeating: 0, count: vector.count)
-        vDSP_vsub(mean, 1, vector, 1, &out, 1, vDSP_Length(vector.count))
-        return normalized(out)
+        normalized(Linear.subtract(mean, from: vector))
     }
 
     static func normalized(_ vector: [Float]) -> [Float] {
-        var norm: Float = 0
-        vDSP_svesq(vector, 1, &norm, vDSP_Length(vector.count))
-        norm = norm.squareRoot()
+        let norm = Linear.sumOfSquares(vector).squareRoot()
         guard norm > 0 else { return vector }
         return vector.map { $0 / norm }
     }
@@ -157,8 +152,9 @@ private struct Groups {
     func centroidScores(_ vector: [Float]) -> [Float] {
         guard count > 0 else { return [] }
         var scores = [Float](repeating: 0, count: count)
-        cblas_sgemv(CblasRowMajor, CblasNoTrans, Int32(count), Int32(dimension), 1, centroids, Int32(dimension),
-                    vector, 1, 0, &scores, 1)
+        centroids.withUnsafeBufferPointer { centroids in
+            Linear.multiply(centroids.baseAddress!, rows: count, columns: dimension, by: vector, into: &scores)
+        }
         return scores
     }
 
@@ -168,9 +164,7 @@ private struct Groups {
         var parent = Array(0..<m)
         guard m > 1 else { return parent }
         // Linkage matrix: average cosine, or -inf where the two can't be one person.
-        var link = [Float](repeating: 0, count: m * m)
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, Int32(m), Int32(m), Int32(dimension), 1, sums,
-                    Int32(dimension), sums, Int32(dimension), 0, &link, Int32(m))
+        var link = Linear.gram(sums, rows: m, columns: dimension)
         for a in 0..<m {
             for b in 0..<m {
                 link[a * m + b] = a == b || conflict(a, b) ? -.infinity : link[a * m + b] / (sizes[a] * sizes[b])
@@ -198,8 +192,7 @@ private struct Groups {
             alive[b] = false
             parent[b] = a
             sums.withUnsafeBufferPointer { all in
-                cblas_sgemv(CblasRowMajor, CblasNoTrans, Int32(m), Int32(dimension), 1, all.baseAddress, Int32(dimension),
-                            all.baseAddress! + startA, 1, 0, &row, 1)
+                Linear.multiply(all.baseAddress!, rows: m, columns: dimension, by: all.baseAddress! + startA, into: &row)
             }
             for c in 0..<m {
                 let blocked = !alive[c] || c == a || link[a * m + c] == -.infinity || link[b * m + c] == -.infinity
