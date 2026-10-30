@@ -52,8 +52,9 @@ writes (it never indexes or edits it) and uses the same query encoder as `digup 
 
 Each step lands as small commits that build and pass the tests on their own.
 
-Done: 1 to 4 (2026-10-30). The core and its tests build on Linux (`scripts/linux-test.sh`, CI); the tests that
-index real files wait for a Linux `MediaReading`, and the CLI for llama.cpp there.
+Done: 1 to 4 (2026-10-30). The core, llama.cpp and the embedder build and pass their tests on Linux
+(`scripts/linux-test.sh`, CI); on the CPU there they make the reference vectors Metal makes, so an index is the same
+on either. The tests that index real files, and the CLI, wait for a Linux `MediaReading`.
 
 1. Vector math behind `#if canImport(Accelerate)`, with portable loops.
 2. `digup mcp`: the MCP server on macOS, over the current core.

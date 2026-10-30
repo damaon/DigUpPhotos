@@ -1,4 +1,5 @@
-# The core builds and passes its tests on Linux (docs/ARCHITECTURE.md). scripts/linux-test.sh does the same locally.
+# The core and llama.cpp's runtime build and pass their tests on Linux (docs/ARCHITECTURE.md). scripts/linux-test.sh
+# does the same locally. The model isn't downloaded here, so the reference-vector test is skipped.
 name: Linux
 
 on:
@@ -15,9 +16,11 @@ jobs:
     container: swift:6.2-noble
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: SQLite
-        run: apt-get update -qq && apt-get install -y -qq libsqlite3-dev
+      - name: Packages
+        run: apt-get update -qq && apt-get install -y -qq libsqlite3-dev cmake ninja-build
+      - name: llama.cpp
+        run: scripts/build-llama.sh
       - name: Build
-        run: swift build --target DigUpCore
+        run: swift build --build-tests
       - name: Test
-        run: swift test
+        run: swift test --skip-build

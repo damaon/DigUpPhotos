@@ -121,8 +121,8 @@ There's also a command-line tool, `.build/release/digup`, that indexes, searches
 (`digup --help`). `scripts/make-testbed.sh` builds a folder of test files to try it on (it needs ffmpeg), and `evals/`
 holds the queries ranking changes are measured with.
 
-The core (`DigUpCore`) also builds and passes its tests on Linux: `scripts/linux-test.sh` runs them in Docker, and CI
-does on every push (docs/ARCHITECTURE.md has the plan for the rest).
+The core (`DigUpCore`) and the embedder on llama.cpp also build and pass their tests on Linux (CPU):
+`scripts/linux-test.sh` runs them in Docker, and CI does on every push (docs/ARCHITECTURE.md has the plan for the rest).
 
 `digup mcp` serves the index to AI agents over MCP (stdio): tools `search`, `photos`, `people` and `status`, on the
 index the app keeps (or `--index DIR`). For Claude Code:

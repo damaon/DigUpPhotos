@@ -1,8 +1,8 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
-// The core and its tests build everywhere. The Apple side, the macOS app and (until llama.cpp and a MediaReading are
-// built for them) the CLI are macOS only. See docs/ARCHITECTURE.md.
+// The core, llama.cpp's runtime and their tests build everywhere. The Apple side, the macOS app and (until a
+// MediaReading is built for them) the CLI are macOS only. See docs/ARCHITECTURE.md.
 var products: [Product] = [.library(name: "DigUpCore", targets: ["DigUpCore"])]
 var dependencies: [Package.Dependency] = []
 var coreDependencies: [Target.Dependency] = []
@@ -21,13 +21,6 @@ coreTestDependencies.append("DigUpApple")
 targets += [
     // MediaReading and friends on Apple's frameworks: ImageIO, Vision, Core ML (SFace), PDFKit, AVFoundation.
     .target(name: "DigUpApple", dependencies: ["DigUpCore"]),
-    // llama.cpp (scripts/build-llama.sh builds it into Vendor/llama) and EmbeddingGemma 2 on it.
-    .systemLibrary(name: "CLlama", path: "Sources/CLlama"),
-    .target(
-        name: "LlamaRuntime",
-        dependencies: ["CLlama", "DigUpCore"],
-        linkerSettings: [.unsafeFlags(["-L\(Context.packageDirectory)/Vendor/llama/lib"])]
-    ),
     // CLI: estimate / index / search / people / status / eval, and `digup mcp`. Doubles as the eval harness, and the
     // app runs it as its indexing helper and its query encoder.
     .executableTarget(name: "digup", dependencies: ["DigUpCore", "DigUpApple", "LlamaRuntime"]),
@@ -40,7 +33,6 @@ targets += [
         linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
     ),
     .testTarget(name: "DigUpAppleTests", dependencies: ["DigUpApple", "DigUpCore"]),
-    .testTarget(name: "LlamaRuntimeTests", dependencies: ["LlamaRuntime"]),
 ]
 #else
 // What macOS ships and other systems don't: SQLite (libsqlite3-dev) and SHA-256 (swift-crypto, CryptoKit's API).
@@ -52,6 +44,23 @@ targets.append(.systemLibrary(name: "CSQLite", path: "Sources/CSQLite", pkgConfi
 #endif
 
 targets += [
+    // llama.cpp (scripts/build-llama.sh builds it into Vendor/llama) and EmbeddingGemma 2 on it: Metal on macOS, the
+    // CPU elsewhere.
+    .systemLibrary(name: "CLlama", path: "Sources/CLlama"),
+    .target(
+        name: "LlamaRuntime",
+        dependencies: ["CLlama", "DigUpCore"],
+        linkerSettings: [
+            .unsafeFlags(["-L\(Context.packageDirectory)/Vendor/llama/lib"]),
+            .linkedLibrary("c++", .when(platforms: [.macOS])),
+            .linkedLibrary("stdc++", .when(platforms: [.linux])),
+            .linkedFramework("Accelerate", .when(platforms: [.macOS])),
+            .linkedFramework("Foundation", .when(platforms: [.macOS])),
+            .linkedFramework("Metal", .when(platforms: [.macOS])),
+            .linkedFramework("MetalKit", .when(platforms: [.macOS])),
+        ]
+    ),
+    .testTarget(name: "LlamaRuntimeTests", dependencies: ["LlamaRuntime"]),
     // The engine: crawler, index store, the embedder interface and worker client, search, people, albums. No UI,
     // and what needs the operating system goes through protocols (MediaReading).
     .target(name: "DigUpCore", dependencies: coreDependencies),
