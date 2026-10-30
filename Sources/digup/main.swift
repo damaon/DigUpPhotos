@@ -1,4 +1,3 @@
-import DigUpApple
 import DigUpCore
 import Foundation
 import LlamaRuntime
@@ -223,7 +222,7 @@ func estimate(_ args: Arguments) throws {
         let started = Date()
         let crawl = Crawler.crawl([folder], options: options)
         let parts = Estimator.estimates(bySubfolder: crawl.candidates, of: folder.path, options: options,
-                                        reader: AppleMedia())
+                                        reader: mediaReader)
         let estimate = parts.values.reduce(Estimate(), +)
         // Biggest first; the app lists them under the folder, so that a long first pass can be cut down.
         let subfolders = parts.filter { $0.key != folder.path }.sorted {
@@ -281,7 +280,7 @@ func estimate(_ args: Arguments) throws {
 func index(_ args: Arguments) throws {
     let store = try args.store()
     if args.flags.contains("--reindex") { try store.resetAll() }
-    let indexer = try Indexer(store: store, options: args.options, reader: AppleMedia(), makeEmbedder: {
+    let indexer = try Indexer(store: store, options: args.options, reader: mediaReader, makeEmbedder: {
         try makeEmbedder(textOnly: false, log: store.directory.appendingPathComponent("worker.log"))
     })
     indexer.embedderSource = embedderSource()
@@ -431,7 +430,7 @@ func indexService(_ args: Arguments) throws -> Int32 {
         try makeEmbedder(textOnly: false, log: args.indexFolder.appendingPathComponent("worker.log"), qos: .utility)
     }
     let store = try IndexStore(directory: args.indexFolder)
-    let indexer = try Indexer(store: store, options: args.options, reader: AppleMedia(),
+    let indexer = try Indexer(store: store, options: args.options, reader: mediaReader,
                               makeEmbedder: { try model.embedder() })
     // A new app version may bring a new model: the index starts over by itself (keyword search on names goes on).
     indexer.embedderSource = embedderSource()

@@ -107,7 +107,6 @@ import Testing
         #expect(names == ["top.txt", "week1.txt"])
     }
 
-    #if canImport(DigUpApple)
     @Test func estimatesComeBySubfolder() throws {
         for path in ["F/A/a.txt", "F/A/deeper/b.txt", "F/B/c.txt", "F/loose.txt"] {
             let url = folder.appendingPathComponent(path)
@@ -123,9 +122,7 @@ import Testing
         let whole = Estimator.estimate(candidates, options: IndexOptions(), reader: testReader)
         #expect(abs(parts.values.reduce(Estimate(), +).seconds - whole.seconds) < 1e-9)
     }
-    #endif
 
-    #if canImport(DigUpApple)
     @Test func subfoldersAreNamedAsTheFolderWasGiven() throws {
         let file = folder.appendingPathComponent("F/A/a.txt")
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -141,7 +138,6 @@ import Testing
         options.excludedFolders = [given.path + "/A"]
         #expect(Crawler.crawl([given], options: options).candidates.isEmpty)
     }
-    #endif
 
     @Test func filesUnderNestedFoldersComeOnce() throws {
         let store = try IndexStore(directory: folder.appendingPathComponent("index"))

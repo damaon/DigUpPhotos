@@ -121,8 +121,23 @@ There's also a command-line tool, `.build/release/digup`, that indexes, searches
 (`digup --help`). `scripts/make-testbed.sh` builds a folder of test files to try it on (it needs ffmpeg), and `evals/`
 holds the queries ranking changes are measured with.
 
-The core (`DigUpCore`) and the embedder on llama.cpp also build and pass their tests on Linux (CPU):
-`scripts/linux-test.sh` runs them in Docker, and CI does on every push (docs/ARCHITECTURE.md has the plan for the rest).
+### On Linux
+
+The CLI (with `digup mcp`) runs on Linux too, on the CPU. It indexes photos (JPEG, PNG, HEIC, AVIF), videos, sound,
+PDFs and text, HTML and Markdown files; it doesn't group faces into people yet, or read Word and OpenDocument files,
+WebP or raw photos. On Ubuntu 24.04 with Swift 6.2:
+
+```sh
+sudo apt install libsqlite3-dev libheif-dev libheif-plugin-libde265 ffmpeg poppler-utils cmake ninja-build
+sudo apt install tesseract-ocr          # optional: the text in screenshots
+scripts/build-llama.sh && swift build -c release --product digup
+hf download ggml-org/embeddinggemma-2-GGUF embeddinggemma-2-Q8_0.gguf mmproj-embeddinggemma-2-Q8_0.gguf \
+  --revision bfcd298762cc34d0357ece5ebdd31791a3a374d8 --local-dir ~/.local/share/DigUpPhotos/Models
+.build/release/digup index ~/Pictures && .build/release/digup search "dog on the beach"
+```
+
+`scripts/linux-test.sh` runs the tests in Docker, and CI does on every push (docs/ARCHITECTURE.md has the plan for the
+rest).
 
 `digup mcp` serves the index to AI agents over MCP (stdio): tools `search`, `photos`, `people` and `status`, on the
 index the app keeps (or `--index DIR`). For Claude Code:
