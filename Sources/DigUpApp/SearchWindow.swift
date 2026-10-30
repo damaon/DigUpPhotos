@@ -904,10 +904,11 @@ private struct GridCell: View {
                 .strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: selected ? 3 : 0.5)
                 .padding(selected ? -3 : 0))
             VStack(alignment: .leading, spacing: 1) {
-                Text(row.title)
+                Text(row.tileTitle)
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(row.name)
                 Text(row.folder)
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)

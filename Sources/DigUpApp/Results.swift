@@ -46,6 +46,13 @@ struct ResultRow: Identifiable, Equatable {
     /// The name to show: left to right as Finder shows it, also when it starts in Arabic ("ملاحظة.md", not "md.ملاحظة").
     var title: String { "\u{200E}" + name }
 
+    /// What a result's tile is called: when a photo or video was taken ("Jul 12, 2023 at 14:32"), which says more than
+    /// "IMG_4052.HEIC"; the name for anything else, or when the camera didn't say.
+    var tileTitle: String {
+        guard kind == .image || kind == .video, let taken else { return title }
+        return taken.formatted(date: .abbreviated, time: .shortened)
+    }
+
     /// The words keyword search found in the excerpt (marked « »), as they're written there.
     var foundWords: [String] {
         guard let excerpt else { return [] }
@@ -136,9 +143,10 @@ struct ResultRow: Identifiable, Equatable {
         return "Sharpness \(sharp) · Light \(light) · Contrast \(contrast) · Composition \(composition)"
     }
 
-    /// "Photo · Oct 1, 2026 · 37.77°N 122.42°W · 1440 × 900 · 2.1 MB", "Video · … · 0:42 · 23 MB"
+    /// "Photo · Oct 1, 2026 at 14:32 · 37.77°N 122.42°W · 1440 × 900 · 2.1 MB", "Video · … · 0:42 · 23 MB"
     var details: String {
-        let when = (taken ?? modified).formatted(date: .abbreviated, time: .omitted)
+        let when = taken?.formatted(date: .abbreviated, time: .shortened)
+            ?? modified.formatted(date: .abbreviated, time: .omitted)
         var parts = [kind.title, when]
         if let capturePlace { parts.append(capturePlace) }
         if let qualityLabel { parts.append(qualityLabel) }
