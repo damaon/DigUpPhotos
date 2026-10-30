@@ -52,6 +52,9 @@ writes, read-only, and uses the same query encoder as `digup search`.
 
 Each step lands as small commits that build and pass the tests on their own.
 
+Done: 1 to 4 (2026-10-30). The core and its tests build on Linux (`scripts/linux-test.sh`, CI); the tests that
+index real files wait for a Linux `MediaReading`.
+
 1. Vector math behind `#if canImport(Accelerate)`, with portable loops.
 2. `digup mcp`: the MCP server on macOS, over the current core.
 3. Platform protocols in the core; today's Apple code moves behind them into `DigUpApple`. `DigUpKit` becomes

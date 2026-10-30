@@ -1,0 +1,23 @@
+# The core builds and passes its tests on Linux (docs/ARCHITECTURE.md). scripts/linux-test.sh does the same locally.
+name: Linux
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    container: swift:6.2-noble
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: SQLite
+        run: apt-get update -qq && apt-get install -y -qq libsqlite3-dev
+      - name: Build
+        run: swift build --target DigUpCore
+      - name: Test
+        run: swift test
