@@ -145,6 +145,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
                 QLPreviewPanel.shared().orderOut(nil)
             } else if !search.query.isEmpty {
                 search.query = ""
+            } else if !search.peopleFilter.isEmpty {
+                search.peopleFilter = []   // then back to the start
             } else {
                 return false
             }
@@ -205,9 +207,14 @@ final class SearchModel {
     var filter: ResultGroupKind? {
         didSet { if filter != oldValue { run() } }
     }
-    /// People to require on each photo (AND when more than one). Empty means no people filter.
+    /// People to require on each photo (AND when more than one). Empty means no people filter. With nothing typed,
+    /// all their photos are shown (`browsingPeople`); typed words search among them.
     var peopleFilter: Set<Int64> = [] {
         didSet { if peopleFilter != oldValue { run() } }
+    }
+    /// People picked and nothing typed: their photos, newest first, rather than search results.
+    var browsingPeople: Bool {
+        !peopleFilter.isEmpty && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     private(set) var people: [Person] = []
     private(set) var results = ResultSet.empty
@@ -303,12 +310,37 @@ final class SearchModel {
         navigated = true
     }
 
+    /// All photos of the picked people (`Engine.photos(of:)`), in the kind picked; no query to read or embed.
+    private func browse(people: Set<Int64>, generation current: Int) {
+        interpreted = nil
+        rewriteNote = nil
+        interpreting = false
+        let filter = self.filter
+        task = Task {
+            let all = await engine.photos(of: people)
+            let shown = filter == nil ? all : await engine.photos(of: people, kinds: filter!.kinds)
+            guard !Task.isCancelled, current == generation else { return }
+            var counts: [ResultGroupKind: Int] = [:]
+            for hit in all { counts[ResultGroupKind(hit.kind), default: 0] += 1 }
+            self.counts = counts
+            results = ResultSet(shown)
+            showWeaker = false
+            if !rows.contains(where: { $0.id == selection }) { selection = rows.first?.id }
+            hasResults = true
+            log("window: \(people.count) people (AND), nothing typed: \(results.ranked.count) photos")
+        }
+    }
+
     private func run() {
         generation += 1
         let current = generation
         task?.cancel()
         navigated = false
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty, !peopleFilter.isEmpty {
+            browse(people: peopleFilter, generation: current)
+            return
+        }
         guard !text.isEmpty else {
             results = .empty
             counts = [:]
@@ -495,10 +527,15 @@ struct SearchWindowView: View {
             }
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if search.query.trimmingCharacters(in: .whitespaces).isEmpty {
+        } else if search.query.trimmingCharacters(in: .whitespaces).isEmpty, !search.browsingPeople {
             SearchHome(search: search, model: model, engine: app.engine)
         } else if !search.hasResults {
             ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if search.results.isEmpty, search.browsingPeople {
+            EmptyState(symbol: "person.2",
+                       title: search.peopleFilter.count > 1 ? "No photos of them together" : "No photos of them here",
+                       message: search.filter == nil ? "They may be in folders that aren't searched any more."
+                           : "Try All instead of \(search.filter!.title).")
         } else if search.results.isEmpty {
             EmptyState(symbol: "magnifyingglass",
                        title: "No good matches for “\(search.query.trimmingCharacters(in: .whitespaces))”",
@@ -530,7 +567,7 @@ struct SearchWindowView: View {
                 .fixedSize()
                 .help("Paths of these results, one per line, to paste or save for another program")
             }
-            if search.hasResults, !search.query.isEmpty {
+            if search.hasResults, !search.query.isEmpty || search.browsingPeople {
                 Text(model.resultsCaveat ?? resultCount).lineLimit(1)
             }
             if let version = model.updateAvailable {
@@ -556,6 +593,7 @@ struct SearchWindowView: View {
 
     private var resultCount: String {
         let count = search.results.ranked.count
+        if search.browsingPeople { return count == 1 ? "1 photo" : "\(count) photos" }
         return (count == 1 ? "1 result" : "\(count) results")
             + (search.results.weaker.isEmpty ? "" : " · \(search.results.weaker.count) weaker")
     }
@@ -660,7 +698,7 @@ private struct KindFilters: View {
             HStack(spacing: 5) {
                 if let symbol { Image(systemName: symbol).font(.system(size: 10.5)) }
                 Text(title)
-                if let count, !search.query.isEmpty {
+                if let count, !search.query.isEmpty || search.browsingPeople {
                     Text("\(count)").monospacedDigit().opacity(0.6)
                 }
             }

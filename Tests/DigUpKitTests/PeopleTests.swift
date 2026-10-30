@@ -330,6 +330,38 @@ import Testing
         }
     }
 
+    /// People picked with nothing typed: every photo with all of them, newest first, each photo once.
+    @Test func photosOfPeopleNewestFirst() throws {
+        let store = try IndexStore(directory: folder)
+        var faces = Faces()
+        try store.db.execute("INSERT INTO people(id, name) VALUES(1, 'Anna'), (2, 'Bob')")
+        func photo(_ name: String, taken: String, people: [Int64]) throws -> Int64 {
+            let file = try insertPhoto(store, name: name)
+            try store.addSegment(file: file, kind: .image, modality: .image,
+                                 vector: [Float](repeating: 0.01, count: Vectors.dimension))
+            try store.finish(file, state: "done", info: ["taken": taken])
+            try store.replaceFaces(of: file, with: people.indices.map { (box($0), faces.vector(person: $0)) })
+            for (slot, person) in people.enumerated() {
+                try store.db.run("UPDATE faces SET person = ? WHERE file = ? AND x = ?",
+                                 [.int(person), .int(file), .double(box(slot).minX)])
+            }
+            return file
+        }
+        _ = try photo("IMG_0001.HEIC", taken: "2023:01:05 10:00:00", people: [1])
+        _ = try photo("IMG_0002.HEIC", taken: "2024:06:01 10:00:00", people: [1])
+        _ = try photo("IMG_E0002.JPG", taken: "2024:06:01 10:00:00", people: [1])   // the same photo, edited
+        _ = try photo("together.jpg", taken: "2023:08:01 10:00:00", people: [1, 2])
+        _ = try photo("bob.jpg", taken: "2025:01:01 10:00:00", people: [2])
+        let searcher = try Searcher(store: store, loadVectors: false)
+        let names = { (people: Set<Int64>) in
+            try searcher.photos(of: people).map { ($0.path as NSString).lastPathComponent }
+        }
+        #expect(try names([1]) == ["IMG_E0002.JPG", "together.jpg", "IMG_0001.HEIC"])
+        #expect(try names([1, 2]) == ["together.jpg"])
+        #expect(try searcher.photos(of: [1], kinds: [.video]).isEmpty)
+        #expect(try names([]).isEmpty)
+    }
+
     /// A suggestion turned down stays away until the user asks to see them all again.
     @Test func dismissedSuggestionsStayAway() throws {
         let store = try IndexStore(directory: folder)

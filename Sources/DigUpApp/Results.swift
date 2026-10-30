@@ -15,6 +15,8 @@ struct ResultRow: Identifiable, Equatable {
     let excerpt: String?    // matched words are wrapped in « »
     let matchedMeaning: Bool
     let matchedWords: Bool
+    /// Here because the people picked are on it, with nothing typed (`Searcher.photos(of:)`), not as a match.
+    let pickedPeople: Bool
     let modified: Date
     let size: Int64
     let info: [String: String]
@@ -34,6 +36,7 @@ struct ResultRow: Identifiable, Equatable {
         excerpt = hit.excerpt.flatMap { $0.isEmpty ? nil : $0 }
         matchedMeaning = (hit.z ?? 0) >= 2
         matchedWords = hit.keywordRank != nil
+        pickedPeople = hit.z == nil && hit.keywordRank == nil && hit.segment == .image
         modified = Date(timeIntervalSince1970: hit.modified)
         size = hit.size
         info = hit.info
@@ -74,6 +77,7 @@ struct ResultRow: Identifiable, Equatable {
 
     /// Why it's here, in a few words: "Matches the picture", "Matches the frame at 0:06".
     var reason: String {
+        if pickedPeople { return "Has the people you picked" }
         guard matchedMeaning else { return matchedWords ? "Has your words" : "Matches its name" }
         let place = loc.map(Self.clock) ?? ""
         let page = loc.map { "page \(Int($0))" } ?? "a page"

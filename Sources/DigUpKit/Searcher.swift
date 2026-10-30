@@ -257,6 +257,29 @@ public final class Searcher {
         return PhotoCopies.one(hits, path: \.path, isPhoto: { $0.kind == .image })
     }
 
+    /// Every photo with all of `people` on it (AND), newest first by when it was taken: what picking people shows before
+    /// anything is typed. Each points at the picture, like a meaning hit, with the same score (none is a better match).
+    public func photos(of people: Set<Int64>, kinds: Set<FileKind>? = nil, limit: Int = 1000) throws -> [SearchHit] {
+        guard let files = try store.filesContaining(allPeople: people), !files.isEmpty else { return [] }
+        var hits: [SearchHit] = []
+        try store.db.query("""
+            SELECT f.path, f.kind, f.mtime, f.size, f.info, s.id FROM files f
+            JOIN segments s ON s.file = f.id AND s.kind = 'image'
+            WHERE f.id IN (\(files.map(String.init).joined(separator: ",")))
+            ORDER BY COALESCE(json_extract(f.info, '$.taken'), strftime('%Y:%m:%d %H:%M:%S', f.mtime, 'unixepoch')) DESC,
+                f.id DESC
+            """) { row in
+            let kind = FileKind(rawValue: row.text(1) ?? "") ?? .image
+            guard kinds?.contains(kind) ?? true else { return }
+            let info = row.text(4)?.data(using: .utf8)
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] } ?? [:]
+            hits.append(SearchHit(path: row.text(0) ?? "", kind: kind, score: 1, z: nil, cosine: nil, keywordRank: nil,
+                                  segment: .image, segmentID: row.int(5), loc: nil, locEnd: nil, excerpt: nil,
+                                  modified: row.double(2), size: row.int(3), info: info))
+        }
+        return Array(PhotoCopies.one(hits, path: \.path, isPhoto: { $0.kind == .image }).prefix(limit))
+    }
+
     /// Codes and IDs ("K7Q2LM", "TRX50") and long numbers ("4815162342": an order, a phone number) mean nothing to an
     /// embedding but everything to keyword search: a query made of them weighs words double and meaning half. Numbers
     /// count since 2026-10-09, when text of digits lost its vectors (`SearchText.hasWords`): a number in a data dump fell

@@ -48,6 +48,7 @@ import SwiftUI
 ///                             open panel), unskip:PATH, types:heic,txt. NAME is the end of a listed folder's path.
 ///     -debugAdd YES           after the snapshot, press Add Folders' Add (or the code sheet's) and log what it applied
 ///     -debugFocus YES         with -debugWindow search: the field has the cursor (its ring shows) in the snapshot
+///     -debugPeople 12,40      with -debugWindow search: those people picked (their photos, or the query among them)
 ///     -debugUpdateCheck YES   check for updates in the background a second after launch, as the daily check does
 ///     -debugQuitAfter S       log the menu and quit S seconds after launch (a downloaded update installs on quit)
 ///     -debugWaitForIndex YES  wait for the model and an idle index with nothing waiting, then search for
@@ -315,7 +316,10 @@ enum DebugHooks {
                 let search = app.searchWindow.search
                 // The field with the cursor, as on screen (an offscreen window doesn't take it by itself).
                 if defaults.bool(forKey: "debugFocus") { DispatchQueue.main.async { search.focusField() } }
-                loaded = { search.query.isEmpty || search.hasResults }
+                let people = Set((defaults.string(forKey: "debugPeople") ?? "").split(separator: ",")
+                    .compactMap { Int64($0) })
+                if !people.isEmpty { search.peopleFilter = people }
+                loaded = { (search.query.isEmpty && !search.browsingPeople) || search.hasResults }
                 draw = { try app.searchWindow.snapshot(to: $0) }
                 close = { app.searchWindow.close() }
             }

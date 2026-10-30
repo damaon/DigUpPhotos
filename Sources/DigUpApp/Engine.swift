@@ -562,19 +562,32 @@ nonisolated final class Engine: @unchecked Sendable {
                 if parsed.hasOperators { log("search: \(parsed.expression.summary)") }
                 let hits = try? searcher?.search(text, queryVector: values, kinds: kinds, people: people, limit: limit,
                                                  prefixLast: prefixLast, clauseVectors: clauses)
-                // Only files that are searched (`FolderSelection`'s rule, as the crawler walks them) and of types not
-                // skipped: a removed folder's rows (or a newly skipped type's) can outlive it until a helper syncs
-                // (indexing was paused, or the app quit first).
-                let (chosen, excluded, types): ([URL], [URL], Set<String>) = lock.withLock {
-                    (self.roots, self.excluded, Set(self.excludedTypes))
-                }
-                let folders = chosen.map(\.path), skipped = excluded.map(\.path)
-                continuation.resume(returning: (hits ?? []).filter { hit in
-                    FolderSelection.isSearched(hit.path, folders: folders, skipped: skipped)
-                        && !types.contains((hit.path as NSString).pathExtension.lowercased())
-                        && FileManager.default.fileExists(atPath: hit.path)
-                })
+                continuation.resume(returning: searched(hits ?? []))
             }
+        }
+    }
+
+    /// Every photo with all of `people` on it, newest first (`Searcher.photos(of:)`): the people picked, nothing typed.
+    func photos(of people: Set<Int64>, kinds: Set<FileKind>? = nil) async -> [SearchHit] {
+        await withCheckedContinuation { continuation in
+            searchQueue.async { [self] in
+                continuation.resume(returning: searched((try? searcher?.photos(of: people, kinds: kinds)) ?? []))
+            }
+        }
+    }
+
+    /// Only files that are searched (`FolderSelection`'s rule, as the crawler walks them) and of types not skipped: a
+    /// removed folder's rows (or a newly skipped type's) can outlive it until a helper syncs (indexing was paused, or
+    /// the app quit first).
+    private func searched(_ hits: [SearchHit]) -> [SearchHit] {
+        let (chosen, excluded, types): ([URL], [URL], Set<String>) = lock.withLock {
+            (self.roots, self.excluded, Set(self.excludedTypes))
+        }
+        let folders = chosen.map(\.path), skipped = excluded.map(\.path)
+        return hits.filter { hit in
+            FolderSelection.isSearched(hit.path, folders: folders, skipped: skipped)
+                && !types.contains((hit.path as NSString).pathExtension.lowercased())
+                && FileManager.default.fileExists(atPath: hit.path)
         }
     }
 
