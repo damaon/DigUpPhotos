@@ -31,3 +31,16 @@ func isInTheCloud(_ info: stat, _ values: URLResourceValues?) -> Bool {
     false
     #endif
 }
+
+/// Where DigUp keeps its models and index: Application Support on macOS, the XDG data folder elsewhere
+/// (`$XDG_DATA_HOME`, or ~/.local/share).
+public let dataFolder: URL = {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    #if os(macOS)
+    return home.appendingPathComponent("Library/Application Support/DigUpPhotos")
+    #else
+    let data = ProcessInfo.processInfo.environment["XDG_DATA_HOME"].flatMap { $0.isEmpty ? nil : $0 }
+    return (data.map { URL(fileURLWithPath: $0) } ?? home.appendingPathComponent(".local/share"))
+        .appendingPathComponent("DigUpPhotos")
+    #endif
+}()

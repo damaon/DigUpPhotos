@@ -37,8 +37,7 @@ public enum ModelFiles {
     public static let totalBytes = all.reduce(0) { $0 + $1.bytes }
 
     /// Where the app keeps them.
-    public static let installed = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/DigUpPhotos/Models")
+    public static let installed = dataFolder.appendingPathComponent("Models")
 
     /// The pinned revision's folder in the Hugging Face cache (`hf download` puts the files there): `$HF_HUB_CACHE`,
     /// `$HF_HOME/hub`, or `~/.cache/huggingface/hub`.

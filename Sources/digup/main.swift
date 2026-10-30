@@ -5,6 +5,9 @@ import LlamaRuntime
 
 // DigUp's developer CLI. Every command works on an explicit index folder, so tests never touch the real one.
 
+/// The index the app keeps (and the CLI uses without `--index`).
+let defaultIndex = dataFolder.appendingPathComponent("index.noindex")
+
 signal(SIGPIPE, SIG_IGN)   // a dead worker must surface as an error, not kill us
 
 let usage = """
@@ -26,7 +29,7 @@ let usage = """
                                               (tools: search, photos, people, status)
 
     Options:
-      --index DIR          index folder (default: ~/Library/Application Support/DigUpPhotos/index.noindex)
+      --index DIR          index folder (default: \(defaultIndex.path))
       --kind K,K           screenshot, image, pdf, doc, audio, video
       --person ID          only photos that include this person (repeatable: AND — all must be on the same photo)
       --include-datasets   don't skip folders that look like datasets
@@ -40,7 +43,7 @@ let usage = """
       --shot-tokens N      vision tokens per screenshot (default 280; 560 was 2× slower, no better on real shots)
 
     The model: EmbeddingGemma 2 on llama.cpp, from $DIGUP_MODELS (only there, when set), else
-    ~/Library/Application Support/DigUpPhotos/Models or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
+    \(ModelFiles.installed.path) or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
     mlx-vlm reference worker instead (evals).
     """
 
@@ -81,8 +84,8 @@ struct Arguments {
     }
 
     var indexFolder: URL {
-        URL(fileURLWithPath: ((values["--index"] ?? "~/Library/Application Support/DigUpPhotos/index.noindex")
-            as NSString).expandingTildeInPath).standardizedFileURL
+        values["--index"].map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath).standardizedFileURL }
+            ?? defaultIndex
     }
 
     func store() throws -> IndexStore {
