@@ -45,21 +45,22 @@ Search, people grouping, albums and dates never need one.
 ### The MCP server
 
 `digup mcp` speaks MCP over stdio, so an agent can be pointed at it like any other command. Tools: `search`
-(text, kinds, people, dates), `photos` (of people or a time), `people`, `status`. It opens the same index the app
-writes, read-only, and uses the same query encoder as `digup search`.
+(text, kinds, people, dates), `photos` (of people or a time), `people`, `status`. It searches the index the app
+writes (it never indexes or edits it) and uses the same query encoder as `digup search`.
 
 ## Order
 
 Each step lands as small commits that build and pass the tests on their own.
 
 Done: 1 to 4 (2026-10-30). The core and its tests build on Linux (`scripts/linux-test.sh`, CI); the tests that
-index real files wait for a Linux `MediaReading`.
+index real files wait for a Linux `MediaReading`, and the CLI for llama.cpp there.
 
 1. Vector math behind `#if canImport(Accelerate)`, with portable loops.
 2. `digup mcp`: the MCP server on macOS, over the current core.
 3. Platform protocols in the core; today's Apple code moves behind them into `DigUpApple`. `DigUpKit` becomes
    `DigUpCore`.
-4. SQLite through a system-library target, so the core and the CLI build in a Linux container (CI).
+4. SQLite through a system-library target, so the core builds and is tested in a Linux container (CI). The CLI
+   follows in step 5, with llama.cpp built for Linux.
 5. `DigUpPortable`: ONNX Runtime faces, image decoding, FFmpeg. Indexing works on Linux.
 6. Windows: the same targets with the Windows toolchain; paths and file watching.
 7. A UI beyond macOS: likely a local web page served by `digup serve`, so one UI covers Linux and Windows.
