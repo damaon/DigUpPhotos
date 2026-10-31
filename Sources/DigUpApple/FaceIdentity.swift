@@ -6,14 +6,6 @@ import Vision
 import DigUpCore
 
 extension FaceIdentity {
-    static let side = 112
-
-    /// Where the eyes, nose tip and mouth corners go in the 112×112 face (left to right as seen, y down): ArcFace's,
-    /// which SFace was trained on.
-    static let template: [CGPoint] = [CGPoint(x: 38.2946, y: 51.6963), CGPoint(x: 73.5318, y: 51.5014),
-                                      CGPoint(x: 56.0252, y: 71.7366), CGPoint(x: 41.5493, y: 92.3655),
-                                      CGPoint(x: 70.7299, y: 92.2041)]
-
     /// The compiled model: in the app's Resources (next to the helper's folder), or where scripts/build-sface.sh
     /// leaves it for `digup` and the tests run from the package.
     static var modelURL: URL? {
@@ -119,21 +111,9 @@ extension FaceIdentity {
         return context.makeImage()
     }
 
-    /// The rotation, scale and shift that best take `from` onto `to` (least squares).
+    /// `FaceIdentity.fit` as Core Graphics takes it.
     static func similarity(from: [CGPoint], to: [CGPoint]) -> CGAffineTransform {
-        let n = CGFloat(from.count)
-        let meanFrom = CGPoint(x: from.map(\.x).reduce(0, +) / n, y: from.map(\.y).reduce(0, +) / n)
-        let meanTo = CGPoint(x: to.map(\.x).reduce(0, +) / n, y: to.map(\.y).reduce(0, +) / n)
-        var dot: CGFloat = 0, cross: CGFloat = 0, spread: CGFloat = 0
-        for (p, q) in zip(from, to) {
-            let (px, py, qx, qy) = (p.x - meanFrom.x, p.y - meanFrom.y, q.x - meanTo.x, q.y - meanTo.y)
-            dot += px * qx + py * qy
-            cross += px * qy - py * qx
-            spread += px * px + py * py
-        }
-        guard spread > 0 else { return .identity }
-        let (c, s) = (dot / spread, cross / spread)   // scale × cos, scale × sin
-        return CGAffineTransform(a: c, b: s, c: -s, d: c, tx: meanTo.x - (c * meanFrom.x - s * meanFrom.y),
-                                 ty: meanTo.y - (s * meanFrom.x + c * meanFrom.y))
+        let t = fit(from: from, to: to)
+        return CGAffineTransform(a: t.c, b: t.s, c: -t.s, d: t.c, tx: t.tx, ty: t.ty)
     }
 }

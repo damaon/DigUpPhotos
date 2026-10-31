@@ -32,3 +32,53 @@ public enum FaceDetector {
 public enum FaceIdentity {
     public static let dimension = 128
 }
+
+extension FaceIdentity {
+    /// SFace's input: a face lined up in 112×112 pixels.
+    public static let side = 112
+
+    /// Where the eyes, nose tip and mouth corners go in the 112×112 face (left to right as seen, y down): ArcFace's,
+    /// which SFace was trained on.
+    public static let template: [CGPoint] = [CGPoint(x: 38.2946, y: 51.6963), CGPoint(x: 73.5318, y: 51.5014),
+                                             CGPoint(x: 56.0252, y: 71.7366), CGPoint(x: 41.5493, y: 92.3655),
+                                             CGPoint(x: 70.7299, y: 92.2041)]
+
+    /// A rotation, scale and shift: (x, y) → (c·x − s·y + tx, s·x + c·y + ty).
+    public struct Similarity: Sendable, Equatable {
+        public var c = 1.0, s = 0.0, tx = 0.0, ty = 0.0
+
+        public func apply(_ point: CGPoint) -> CGPoint {
+            let (x, y) = (Double(point.x), Double(point.y))
+            return CGPoint(x: c * x - s * y + tx, y: s * x + c * y + ty)
+        }
+
+        /// The way back.
+        public var inverse: Similarity {
+            let scale = c * c + s * s
+            guard scale > 0 else { return Similarity() }
+            let (ic, is_) = (c / scale, -s / scale)
+            return Similarity(c: ic, s: is_, tx: -(ic * tx - is_ * ty), ty: -(is_ * tx + ic * ty))
+        }
+    }
+
+    /// The similarity that best takes `from` onto `to` (least squares): how a face's five points are lined up with
+    /// `template`, on every platform.
+    public static func fit(from: [CGPoint], to: [CGPoint]) -> Similarity {
+        let n = Double(from.count)
+        guard n > 0 else { return Similarity() }
+        let meanFrom = (x: from.map { Double($0.x) }.reduce(0, +) / n, y: from.map { Double($0.y) }.reduce(0, +) / n)
+        let meanTo = (x: to.map { Double($0.x) }.reduce(0, +) / n, y: to.map { Double($0.y) }.reduce(0, +) / n)
+        var dot = 0.0, cross = 0.0, spread = 0.0
+        for (p, q) in zip(from, to) {
+            let (px, py) = (Double(p.x) - meanFrom.x, Double(p.y) - meanFrom.y)
+            let (qx, qy) = (Double(q.x) - meanTo.x, Double(q.y) - meanTo.y)
+            dot += px * qx + py * qy
+            cross += px * qy - py * qx
+            spread += px * px + py * py
+        }
+        guard spread > 0 else { return Similarity() }
+        let (c, s) = (dot / spread, cross / spread)   // scale × cos, scale × sin
+        return Similarity(c: c, s: s, tx: meanTo.x - (c * meanFrom.x - s * meanFrom.y),
+                          ty: meanTo.y - (s * meanFrom.x + c * meanFrom.y))
+    }
+}
