@@ -3,8 +3,8 @@ import Foundation
 
 /// `MediaReading` without Apple's frameworks, for Linux (and Windows later): pictures through stb_image and libheif,
 /// EXIF through the core's reader, faces through YuNet and SFace on ONNX Runtime (`PortableFaces`), PDFs through
-/// poppler-utils, sound and video through ffmpeg, text in pictures through tesseract when it's installed. What it can't
-/// do yet: Word, OpenDocument and RTF files, WebP and raw photos. docs/ARCHITECTURE.md has the plan.
+/// poppler-utils, sound and video through ffmpeg, text in pictures through tesseract when it's installed; Word, OpenDocument
+/// and RTF through the core's `RichText`. docs/ARCHITECTURE.md has the plan.
 public struct PortableMedia: MediaReading {
     public init() {}
 
@@ -57,7 +57,13 @@ public struct PortableMedia: MediaReading {
     public func documentText(of url: URL) throws -> String {
         switch url.pathExtension.lowercased() {
         case "html", "htm": return DocExtractor.plainText(fromHTML: try DocExtractor.readText(url))
-        case "docx", "doc", "odt", "rtf": throw ExtractError.unreadable("\(url.pathExtension) is read on macOS only, so far")
+        case "docx", "odt", "rtf": return try RichText.text(of: url)
+        // Word 97-2003: antiword or catdoc, when one is installed.
+        case "doc":
+            for (tool, arguments) in [("antiword", ["-w", "0"]), ("catdoc", ["-w", "-d", "utf-8"])] where Tools.find(tool) != nil {
+                return String(decoding: try Tools.run(tool, arguments + [url.path]), as: UTF8.self)
+            }
+            throw ExtractError.unreadable("old Word files need antiword or catdoc")
         default: return try DocExtractor.readText(url)
         }
     }

@@ -89,7 +89,7 @@ targets += [
     // The engine: crawler, index store, the embedder interface and worker client, search, people, albums. No UI,
     // and what needs the operating system goes through protocols (MediaReading).
     .target(name: "DigUpCore", dependencies: coreDependencies),
-    .testTarget(name: "DigUpCoreTests", dependencies: coreTestDependencies),
+    .testTarget(name: "DigUpCoreTests", dependencies: coreTestDependencies, resources: [.copy("Fixtures")]),
 ]
 
 let package = Package(

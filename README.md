@@ -124,8 +124,8 @@ holds the queries ranking changes are measured with.
 ### On Linux
 
 The CLI (with `digup mcp`) runs on Linux too, on the CPU. It indexes photos (JPEG, PNG, HEIC, AVIF), videos, sound,
-PDFs and text, HTML and Markdown files, and groups faces into people; it doesn't read Word and OpenDocument files, WebP
-or raw photos yet. On Ubuntu 24.04 with Swift 6.2:
+PDFs, Word, OpenDocument, RTF, text, HTML and Markdown files, and groups faces into people; it doesn't read WebP or raw
+photos yet. On Ubuntu 24.04 with Swift 6.2:
 
 ```sh
 sudo apt install libsqlite3-dev libheif-dev libheif-plugin-libde265 ffmpeg poppler-utils cmake ninja-build curl
