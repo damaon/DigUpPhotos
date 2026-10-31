@@ -20,20 +20,73 @@ public struct Exif: Sendable, Equatable {
 
     public var capture: CaptureInfo { CaptureInfo(taken: taken, latitude: latitude, longitude: longitude) }
 
-    /// Reads the first 256 KiB, where EXIF sits in every file seen so far.
+    /// Reads the first 256 KiB, where EXIF sits in every file seen so far but WebP, which may keep it at the end.
     public static func read(_ url: URL) -> Exif {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return Exif() }
         defer { try? handle.close() }
-        guard let data = try? handle.read(upToCount: 256 * 1024) else { return Exif() }
+        guard var data = try? handle.read(upToCount: 256 * 1024) else { return Exif() }
+        if isWebP([UInt8](data.prefix(12))), data.count == 256 * 1024, let rest = try? handle.readToEnd() {
+            data += rest
+        }
         return parse([UInt8](data))
     }
 
     public static func parse(_ bytes: [UInt8]) -> Exif {
         if bytes.starts(with: [0xFF, 0xD8]), let tiff = jpegTIFF(bytes) { return parseTIFF(bytes, at: tiff) }
-        if bytes.starts(with: [0x49, 0x49, 0x2A, 0x00]) || bytes.starts(with: [0x4D, 0x4D, 0x00, 0x2A]) {
+        // TIFF, and the raws built on it with a magic number of their own: Olympus ORF ("IIRO", "IIRS"), Panasonic
+        // RW2 ("IIU\0").
+        if [[0x49, 0x49, 0x2A, 0x00], [0x4D, 0x4D, 0x00, 0x2A], [0x49, 0x49, 0x52, 0x4F], [0x49, 0x49, 0x52, 0x53],
+            [0x49, 0x49, 0x55, 0x00]].contains(where: bytes.starts) {
             return parseTIFF(bytes, at: 0)
         }
+        if isWebP(bytes), let tiff = webpTIFF(bytes) { return parseTIFF(bytes, at: tiff) }
+        if bytes.count >= 12, Array(bytes[4..<12]) == Array("ftypcrx ".utf8) { return parseCR3(bytes) }
         return Exif()
+    }
+
+    /// Canon CR3 (ISO media) keeps EXIF as TIFF structures in boxes of its own: CMT1 holds IFD0, CMT2 the EXIF IFD and
+    /// CMT4 the GPS IFD, each as the first IFD of its TIFF.
+    private static func parseCR3(_ bytes: [UInt8]) -> Exif {
+        func box(_ name: String) -> Int? {
+            let tag = Array(name.utf8)
+            var at = 4
+            while at + 8 <= bytes.count {
+                if bytes[at] == tag[0], bytes[at + 1] == tag[1], bytes[at + 2] == tag[2], bytes[at + 3] == tag[3] {
+                    return at + 4
+                }
+                at += 1
+            }
+            return nil
+        }
+        var exif = box("CMT1").map { parseTIFF(bytes, at: $0) } ?? Exif()
+        if let at = box("CMT2") {
+            let reader = TIFFReader(bytes: bytes, base: at)
+            reader.u32(4).map { reader.dateTaken(at: Int($0), into: &exif) }
+        }
+        if let at = box("CMT4") {
+            let reader = TIFFReader(bytes: bytes, base: at)
+            reader.u32(4).map { reader.place(at: Int($0), into: &exif) }
+        }
+        return exif
+    }
+
+    static func isWebP(_ bytes: [UInt8]) -> Bool {
+        bytes.count >= 12 && Array(bytes[0..<4]) == Array("RIFF".utf8) && Array(bytes[8..<12]) == Array("WEBP".utf8)
+    }
+
+    /// Where the TIFF header in a WebP's EXIF chunk starts (some writers put "Exif\0\0" before it).
+    private static func webpTIFF(_ bytes: [UInt8]) -> Int? {
+        var at = 12
+        while at + 8 <= bytes.count {
+            let size = Int(bytes[at + 4]) | Int(bytes[at + 5]) << 8 | Int(bytes[at + 6]) << 16 | Int(bytes[at + 7]) << 24
+            if Array(bytes[at..<(at + 4)]) == Array("EXIF".utf8) {
+                let data = at + 8
+                if data + 6 <= bytes.count, Array(bytes[data..<(data + 6)]) == Array("Exif\0\0".utf8) { return data + 6 }
+                return data
+            }
+            at += 8 + size + (size & 1)
+        }
+        return nil
     }
 
     /// Where the TIFF header inside a JPEG's "Exif\0\0" APP1 segment starts.
@@ -65,33 +118,8 @@ public struct Exif: Sendable, Equatable {
             default: break
             }
         }
-        if let exifIFD {
-            reader.entries(at: exifIFD) { tag, entry in
-                if tag == 0x9003, let text = reader.ascii(entry), !text.isEmpty { exif.taken = text }
-            }
-        }
-        if let gpsIFD {
-            var latRef = "N", lonRef = "E"
-            var latitude: Double?, longitude: Double?
-            reader.entries(at: gpsIFD) { tag, entry in
-                switch tag {
-                case 1: latRef = reader.ascii(entry)?.uppercased() ?? latRef
-                case 2: latitude = reader.degrees(entry)
-                case 3: lonRef = reader.ascii(entry)?.uppercased() ?? lonRef
-                case 4: longitude = reader.degrees(entry)
-                default: break
-                }
-            }
-            if let latitude, let longitude {
-                let lat = latRef == "S" ? -latitude : latitude
-                let lon = lonRef == "W" ? -longitude : longitude
-                // Out of range is dropped, as `CaptureInfo.gps` does with ImageIO's reading.
-                if abs(lat) <= 90, abs(lon) <= 180 {
-                    exif.latitude = lat
-                    exif.longitude = lon
-                }
-            }
-        }
+        if let exifIFD { reader.dateTaken(at: exifIFD, into: &exif) }
+        if let gpsIFD { reader.place(at: gpsIFD, into: &exif) }
         return exif
     }
 }
@@ -131,6 +159,36 @@ private struct TIFFReader {
             let total = size * Int(n)
             let valueAt = total <= 4 ? at + 8 : Int(u32(at + 8) ?? UInt32.max)
             body(tag, Entry(type: type, count: Int(n), valueAt: valueAt))
+        }
+    }
+
+    /// `DateTimeOriginal` from the EXIF IFD.
+    func dateTaken(at offset: Int, into exif: inout Exif) {
+        entries(at: offset) { tag, entry in
+            if tag == 0x9003, let text = ascii(entry), !text.isEmpty { exif.taken = text }
+        }
+    }
+
+    /// Latitude and longitude from the GPS IFD.
+    func place(at offset: Int, into exif: inout Exif) {
+        var latRef = "N", lonRef = "E"
+        var latitude: Double?, longitude: Double?
+        entries(at: offset) { tag, entry in
+            switch tag {
+            case 1: latRef = ascii(entry)?.uppercased() ?? latRef
+            case 2: latitude = degrees(entry)
+            case 3: lonRef = ascii(entry)?.uppercased() ?? lonRef
+            case 4: longitude = degrees(entry)
+            default: break
+            }
+        }
+        guard let latitude, let longitude else { return }
+        let lat = latRef == "S" ? -latitude : latitude
+        let lon = lonRef == "W" ? -longitude : longitude
+        // Out of range is dropped, as `CaptureInfo.gps` does with ImageIO's reading.
+        if abs(lat) <= 90, abs(lon) <= 180 {
+            exif.latitude = lat
+            exif.longitude = lon
         }
     }
 

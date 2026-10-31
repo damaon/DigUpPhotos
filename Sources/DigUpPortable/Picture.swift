@@ -10,31 +10,72 @@ struct Picture {
     var pixels: [UInt8]
 
     /// HEIC, HEIF and AVIF through libheif (upright already: it applies the file's rotation); JPEG, PNG, GIF, BMP,
-    /// PSD, TGA and PNM through stb_image. Nil for anything else (WebP, raw).
+    /// PSD, TGA and PNM through stb_image; raw photos by the JPEG they embed (`RawPreview`); anything else ffmpeg reads
+    /// (WebP, TIFF, JPEG XL where it's built with it) through ffmpeg. Nil when none of them can.
     static func decode(_ url: URL) -> (picture: Picture, exif: Exif)? {
-        if heifExtensions.contains(url.pathExtension.lowercased()) { return decodeHEIF(url) }
+        let ext = url.pathExtension.lowercased()
+        if heifExtensions.contains(ext) { return decodeHEIF(url) }
+        if rawExtensions.contains(ext) { return decodeRaw(url) }
         var width: Int32 = 0, height: Int32 = 0
-        guard let data = digup_stb_load_rgb(url.path, &width, &height) else { return nil }
+        if let data = digup_stb_load_rgb(url.path, &width, &height) {
+            defer { digup_stb_free(data) }
+            let picture = Picture(width: Int(width), height: Int(height),
+                                  pixels: [UInt8](UnsafeBufferPointer(start: data, count: Int(width * height) * 3)))
+            let exif = Exif.read(url)
+            return (picture.oriented(exif.orientation), exif)
+        }
+        return decodeWithFFmpeg(url)
+    }
+
+    /// The stored size, without decoding the pixels (for the too-small check). A raw photo's is its preview's.
+    static func size(of url: URL) -> (width: Int, height: Int)? {
+        let ext = url.pathExtension.lowercased()
+        if heifExtensions.contains(ext) {
+            return withHEIF(url) { handle in
+                (Int(heif_image_handle_get_width(handle)), Int(heif_image_handle_get_height(handle)))
+            }
+        }
+        if rawExtensions.contains(ext) { return RawPreview.largestJPEG(in: url).map { ($0.found.width, $0.found.height) } }
+        var width: Int32 = 0, height: Int32 = 0
+        if digup_stb_info(url.path, &width, &height) != 0 { return (Int(width), Int(height)) }
+        guard let data = try? Tools.run("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries",
+                                                    "stream=width,height", "-of", "csv=p=0:s=x", url.path]) else { return nil }
+        let parts = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "x").compactMap { Int($0) }
+        return parts.count == 2 && parts[0] > 0 && parts[1] > 0 ? (parts[0], parts[1]) : nil
+    }
+
+    static let heifExtensions: Set<String> = ["heic", "heif", "hif", "avif"]
+    static let rawExtensions: Set<String> = ["dng", "cr2", "cr3", "nef", "nrw", "arw", "orf", "rw2", "raf", "srw", "pef"]
+
+    /// The raw's biggest embedded JPEG, turned upright by the raw's own EXIF (or, in CR3 and RAF, whose containers
+    /// aren't TIFF, by the JPEG's).
+    private static func decodeRaw(_ url: URL) -> (picture: Picture, exif: Exif)? {
+        guard let (bytes, _) = RawPreview.largestJPEG(in: url) else { return nil }
+        var width: Int32 = 0, height: Int32 = 0
+        guard let data = digup_stb_load_rgb_memory(bytes, Int32(bytes.count), &width, &height) else { return nil }
+        defer { digup_stb_free(data) }
+        let picture = Picture(width: Int(width), height: Int(height),
+                              pixels: [UInt8](UnsafeBufferPointer(start: data, count: Int(width * height) * 3)))
+        var exif = Exif.read(url)
+        if exif == Exif() { exif = Exif.parse(bytes) }
+        return (picture.oriented(exif.orientation), exif)
+    }
+
+    /// The first frame as ffmpeg decodes it, through a BMP that stb_image reads back.
+    private static func decodeWithFFmpeg(_ url: URL) -> (picture: Picture, exif: Exif)? {
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".bmp")
+        defer { try? FileManager.default.removeItem(at: out) }
+        guard (try? Tools.run("ffmpeg", ["-v", "error", "-nostdin", "-i", url.path, "-frames:v", "1", "-pix_fmt", "bgr24",
+                                         out.path])) != nil else { return nil }
+        var width: Int32 = 0, height: Int32 = 0
+        guard let data = digup_stb_load_rgb(out.path, &width, &height) else { return nil }
         defer { digup_stb_free(data) }
         let picture = Picture(width: Int(width), height: Int(height),
                               pixels: [UInt8](UnsafeBufferPointer(start: data, count: Int(width * height) * 3)))
         let exif = Exif.read(url)
         return (picture.oriented(exif.orientation), exif)
     }
-
-    /// The stored size, without decoding the pixels (for the too-small check).
-    static func size(of url: URL) -> (width: Int, height: Int)? {
-        if heifExtensions.contains(url.pathExtension.lowercased()) {
-            return withHEIF(url) { handle in
-                (Int(heif_image_handle_get_width(handle)), Int(heif_image_handle_get_height(handle)))
-            }
-        }
-        var width: Int32 = 0, height: Int32 = 0
-        guard digup_stb_info(url.path, &width, &height) != 0 else { return nil }
-        return (Int(width), Int(height))
-    }
-
-    static let heifExtensions: Set<String> = ["heic", "heif", "hif", "avif"]
 
     private static func withHEIF<T>(_ url: URL, _ body: (OpaquePointer) -> T?) -> T? {
         guard let context = heif_context_alloc() else { return nil }

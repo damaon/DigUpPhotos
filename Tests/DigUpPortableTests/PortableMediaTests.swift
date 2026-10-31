@@ -42,6 +42,18 @@ import Testing
         #expect(read.fitted(in: 100).width == 4) // never larger
     }
 
+    /// WebP and TIFF, which stb_image doesn't read, through ffmpeg (lossless, so the pixels come back as they were).
+    @Test(.enabled(if: Tools.find("ffmpeg") != nil), arguments: [("webp", ["-lossless", "1"]), ("tiff", [])])
+    func picturesStbCantReadGoThroughFFmpeg(ext: String, options: [String]) throws {
+        let pixels: [UInt8] = (0..<(64 * 32)).flatMap { $0 % 64 < 32 ? [200, 30, 30] : [30, 30, 200] }
+        let bmp = folder.appendingPathComponent("source.bmp"), url = folder.appendingPathComponent("picture.\(ext)")
+        try Picture(width: 64, height: 32, pixels: pixels).writeBMP(to: bmp)
+        try Tools.run("ffmpeg", ["-v", "error", "-nostdin", "-i", bmp.path] + options + [url.path])
+        #expect(Picture.size(of: url)! == (64, 32))
+        let read = try #require(Picture.decode(url)).picture
+        #expect(read.width == 64 && read.height == 32 && read.pixels == pixels)
+    }
+
     @Test func imageIsPreparedForTheModel() throws {
         let url = folder.appendingPathComponent("photo.bmp")
         try Picture(width: 300, height: 200, pixels: [UInt8](repeating: 128, count: 300 * 200 * 3)).writeBMP(to: url)

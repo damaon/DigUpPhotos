@@ -1,10 +1,10 @@
 import DigUpCore
 import Foundation
 
-/// `MediaReading` without Apple's frameworks, for Linux (and Windows later): pictures through stb_image and libheif,
-/// EXIF through the core's reader, faces through YuNet and SFace on ONNX Runtime (`PortableFaces`), PDFs through
-/// poppler-utils, sound and video through ffmpeg, text in pictures through tesseract when it's installed; Word, OpenDocument
-/// and RTF through the core's `RichText`. docs/ARCHITECTURE.md has the plan.
+/// `MediaReading` without Apple's frameworks, for Linux (and Windows later): pictures through stb_image and libheif
+/// (WebP and TIFF through ffmpeg, raw photos by their embedded JPEG), EXIF through the core's reader, faces through
+/// YuNet and SFace on ONNX Runtime (`PortableFaces`), PDFs through poppler-utils, sound and video through ffmpeg, text
+/// in pictures through tesseract when it's installed; Word, OpenDocument and RTF through the core's `RichText`. docs/ARCHITECTURE.md has the plan.
 public struct PortableMedia: MediaReading {
     public init() {}
 

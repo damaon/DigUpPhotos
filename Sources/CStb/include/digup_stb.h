@@ -7,4 +7,7 @@
 int digup_stb_info(const char *path, int *width, int *height);
 /// The pixels as 8-bit RGB, rows top to bottom; NULL when unreadable. Free with digup_stb_free.
 uint8_t *digup_stb_load_rgb(const char *path, int *width, int *height);
+/// The same for a picture in memory (a raw photo's embedded JPEG).
+int digup_stb_info_memory(const uint8_t *bytes, int length, int *width, int *height);
+uint8_t *digup_stb_load_rgb_memory(const uint8_t *bytes, int length, int *width, int *height);
 void digup_stb_free(void *pixels);

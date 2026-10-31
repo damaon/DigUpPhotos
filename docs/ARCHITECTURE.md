@@ -32,7 +32,7 @@ hands it to the indexer.
 
 | Job | Apple (`AppleMedia`) | Linux / Windows (`PortableMedia`) |
 | --- | --- | --- |
-| Decode and shrink a picture | ImageIO | stb_image, libheif |
+| Decode and shrink a picture | ImageIO | stb_image, libheif; WebP and TIFF through ffmpeg; raw by its embedded JPEG (`RawPreview` in the core) |
 | EXIF: capture date, place, orientation | ImageIO | `Exif` in the core |
 | Faces and their vectors | Vision, SFace on Core ML | YuNet + SFace on ONNX Runtime |
 | PDF pages: text and pictures | PDFKit | poppler-utils |
@@ -61,8 +61,9 @@ finds 216 (199 the same), SFace gives them vectors at cosine 0.94 (median) to wh
 with macOS's at pair precision 0.98, recall 0.93. Against the library owner's own merges, Linux groups as well as macOS
 (precision 0.844 vs 0.842, recall 0.377 vs 0.360). Word, OpenDocument and RTF files: on 383 of them
 found on a Mac, `RichText` reads the same words as Cocoa in 371 (≥ 98%); the rest are old Apple RTFs in the Mac Roman code
-page, where Cocoa guesses Central European letters by language. What `DigUpPortable` doesn't do yet: WebP and raw photos,
-OCR without tesseract.
+page, where Cocoa guesses Central European letters by language. Raw photos (CR2, CR3, NEF, ARW, ORF, RW2, PEF, DNG, RAF from
+raw.pixls.us): the embedded JPEG looks as ImageIO's decoding of the raw does (cosine of 32×32 copies 0.98 to 1.00), at
+1616 px or more, with the same capture date and orientation. What `DigUpPortable` doesn't do yet: OCR without tesseract.
 
 1. Vector math behind `#if canImport(Accelerate)`, with portable loops.
 2. `digup mcp`: the MCP server on macOS, over the current core.
