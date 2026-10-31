@@ -20,8 +20,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: compnerd/gha-setup-swift@9ff1ee4c44888c5817fc14d1b257ac8cabb4935f # v0.5.1
         with:
-          swift-version: swift-6.2-release
-          swift-build: 6.2-RELEASE
+          swift-version: swift-6.3.3-release
+          swift-build: 6.3.3-RELEASE
       - name: ffmpeg (sound, video, WebP, HEIC)
         run: choco install ffmpeg --no-progress -y > /dev/null
       # Each step's errors also become annotations, which the checks API shows without signing in.
@@ -41,3 +41,17 @@ jobs:
           cp Vendor/onnxruntime/lib/*.dll "$(swift build --show-bin-path)/"
           swift test --skip-build 2>&1 | tee test.log \
             || { grep -E "✘|error|Fatal|crash" test.log | head -60 | sed 's/^/::error::/'; tail -15 test.log | sed 's/^/::error::/'; exit 1; }
+      # What a Windows user installs: the program (Swift's runtime linked in), ONNX Runtime and install.ps1.
+      - name: Package
+        run: |
+          set -o pipefail
+          swift build -c release --product digup --static-swift-stdlib 2>&1 | tee release.log \
+            || { grep -E "error:|LINK|lld-link" release.log | sort -u | head -40 | sed 's/^/::error::/'; exit 1; }
+          mkdir -p DigUp
+          cp "$(swift build -c release --show-bin-path)/digup.exe" Vendor/onnxruntime/lib/onnxruntime.dll \
+            packaging/windows/install.ps1 packaging/windows/digup.ico DigUp/
+          DigUp/digup.exe --help | head -1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DigUp-windows-x64
+          path: DigUp/

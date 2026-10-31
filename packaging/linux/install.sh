@@ -1,6 +1,6 @@
 #!/bin/bash
 # Installs DigUp for this user on Linux, from a build (scripts/build-llama.sh, scripts/build-onnx.sh, then
-# `swift build -c release --product digup`): the program and ONNX Runtime in ~/.local/lib/digup, `digup` on PATH in
+# `swift build -c release --product digup --static-swift-stdlib`): the program and ONNX Runtime in ~/.local/lib/digup, `digup` on PATH in
 # ~/.local/bin, "DigUp" in the app menu (it opens DigUp in the browser), and a systemd user service that runs
 # `digup serve` from login on, so new files are found while the page is closed.
 #   packaging/linux/install.sh              install, or update
@@ -22,7 +22,7 @@ if [[ "${1:-}" == --remove ]]; then
   exit 0
 fi
 
-[[ -x .build/release/digup ]] || { echo "build it first: swift build -c release --product digup" >&2; exit 1; }
+[[ -x .build/release/digup ]] || { echo "build it first: swift build -c release --product digup --static-swift-stdlib" >&2; exit 1; }
 mkdir -p "$LIB" "$BIN" "$APPS" "$ICONS" "$UNITS"
 cp .build/release/digup "$LIB/"
 cp -P Vendor/onnxruntime/lib/libonnxruntime.so* "$LIB/"   # found next to the program ($ORIGIN)

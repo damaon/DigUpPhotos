@@ -130,14 +130,18 @@ Ubuntu 24.04 with Swift 6.2:
 ```sh
 sudo apt install libsqlite3-dev libheif-dev libheif-plugin-libde265 ffmpeg poppler-utils cmake ninja-build curl
 sudo apt install tesseract-ocr          # optional: the text in screenshots
-scripts/build-llama.sh && scripts/build-onnx.sh && swift build -c release --product digup
-.build/release/digup serve ~/Pictures --open      # DigUp in the browser; it offers to download the model
+scripts/build-llama.sh && scripts/build-onnx.sh && swift build -c release --product digup --static-swift-stdlib
+packaging/linux/install.sh      # "DigUp" in the app menu, running in the background from login (systemd user service)
 ```
 
-`digup serve` is DigUp's window where there's no menubar app: a page at http://127.0.0.1:7811/ to search, see the
-people on your photos and name them, and choose the folders. It indexes them in the background and looks for changes
-every ten minutes. Only this computer's browser gets in. From the terminal instead: `digup download` fetches the model
-(865 MB, checked against its SHA-256), then `digup index ~/Pictures` and `digup search "dog on the beach"`.
+The installed program needs only `libsqlite3-0 libheif1 libheif-plugin-libde265 libcurl4 ffmpeg poppler-utils` (and
+`tesseract-ocr` for text in screenshots) on the machine it runs on. `packaging/linux/install.sh --remove` takes it out.
+
+`digup serve` (or "DigUp" in the app menu) is DigUp's window where there's no menubar app: a page at
+http://127.0.0.1:7811/ to search, see the people on your photos and name them, and choose the folders. It offers to
+download the model on first use, indexes the folders in the background and looks for changes every ten minutes. Only
+this computer's browser gets in. From the terminal instead: `digup download` fetches the model (905 MB with the face
+models, checked against their SHA-256), then `digup index ~/Pictures` and `digup search "dog on the beach"`.
 
 `scripts/linux-test.sh` runs the tests in Docker, and CI does on every push (docs/ARCHITECTURE.md has the plan for the
 rest).
