@@ -26,6 +26,10 @@ let usage = """
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
       digup mcp                               the index as an MCP server on stdin/stdout, for AI agents
                                               (tools: search, photos, people, status)
+      digup serve [<folder>...] [--port 7811] [--open]
+                                              DigUp in the browser at http://127.0.0.1:7811/: search, people,
+                                              folders; indexes them in the background (folders given here are added)
+      digup download                          fetch the model (865 MB) into \(ModelFiles.installed.path)
 
     Options:
       --index DIR          index folder (default: \(defaultIndex.path))
@@ -57,7 +61,7 @@ struct Arguments {
     var lists: [String: [String]] = [:]
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--minlift", "--word-weight", "--new-limit",
-                                      "--linger", "--shot-tokens", "--rename"]
+                                      "--linger", "--shot-tokens", "--rename", "--port"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--person"]
 
     init(_ raw: ArraySlice<String>) throws {
@@ -544,6 +548,8 @@ do {
     case "index-service": exit(try indexService(args))
     case "worker": exit(workerService(args))
     case "mcp": exit(mcpServer(args))
+    case "serve": exit(try serve(args))
+    case "download": try download(args)
     default:
         print(usage)
         exit(2)

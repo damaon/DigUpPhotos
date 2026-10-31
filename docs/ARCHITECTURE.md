@@ -43,6 +43,19 @@ hands it to the indexer.
 
 Search, people grouping, albums and dates never need one.
 
+### `digup serve`: the UI on Linux and Windows
+
+`digup serve` is a small HTTP server in the CLI (`HTTPServer`: BSD sockets, Winsock on Windows; no dependencies) and
+one page with no outside resources (`WebPage`): search with kinds, people and times, a viewer for photos, pages,
+video moments and document text, people with their faces (named and merged from the page), and the folders, chosen in a
+folder browser. It indexes in its own process with the same `Indexer`, syncing every ten minutes and when asked, and
+fetches the model (`ModelFetch`, also `digup download`). Thumbnails come from `MediaReading.thumbnail` and are kept in
+the index folder, next to `serve.json` (its folders).
+
+It listens on 127.0.0.1 only, answers only requests for its own host name (no DNS rebinding), and every /api call needs
+the SameSite=Strict cookie the page set; POSTs must be JSON from the page's origin. Files are served only when they're
+in the index. On macOS it can share the app's index: it never removes files from folders it wasn't told about.
+
 ### The MCP server
 
 `digup mcp` speaks MCP over stdio, so an agent can be pointed at it like any other command. Tools: `search`
@@ -74,4 +87,5 @@ raw.pixls.us): the embedded JPEG looks as ImageIO's decoding of the raw does (co
 5. `DigUpPortable`: image decoding (stb_image, libheif), EXIF in the core, faces (YuNet + SFace on ONNX Runtime), ffmpeg,
    poppler-utils, tesseract. Indexing works on Linux.
 6. Windows: the same targets with the Windows toolchain; paths and file watching.
-7. A UI beyond macOS: likely a local web page served by `digup serve`, so one UI covers Linux and Windows.
+7. A UI beyond macOS: `digup serve`, a local web page, so one UI covers Linux and Windows. Done on Linux and macOS
+   (2026-10-31).

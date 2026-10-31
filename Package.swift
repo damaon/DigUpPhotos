@@ -86,6 +86,7 @@ targets += [
     // CLI: estimate / index / search / people / status / eval, and `digup mcp`. Doubles as the eval harness, and the
     // app runs it as its indexing helper and its query encoder.
     .executableTarget(name: "digup", dependencies: ["DigUpCore", reader, "LlamaRuntime"]),
+    .testTarget(name: "digupTests", dependencies: ["digup", "DigUpCore"]),
     // The engine: crawler, index store, the embedder interface and worker client, search, people, albums. No UI,
     // and what needs the operating system goes through protocols (MediaReading).
     .target(name: "DigUpCore", dependencies: coreDependencies),

@@ -295,6 +295,13 @@ public final class IndexStore {
                    device: UInt64(bitPattern: row.int(6)), state: row.text(7) ?? "pending")
     }
 
+    /// The file at `path`, if it's in the index.
+    public func file(atPath path: String) throws -> FileRecord? {
+        var found: FileRecord?
+        try db.query("SELECT \(Self.fileColumns) FROM files WHERE path = ?", [.text(path)]) { found = Self.record($0) }
+        return found
+    }
+
     /// Every file under one of `roots`.
     public func files(under roots: [String]) throws -> [FileRecord] {
         var out: [FileRecord] = []

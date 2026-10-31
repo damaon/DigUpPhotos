@@ -131,10 +131,13 @@ Ubuntu 24.04 with Swift 6.2:
 sudo apt install libsqlite3-dev libheif-dev libheif-plugin-libde265 ffmpeg poppler-utils cmake ninja-build curl
 sudo apt install tesseract-ocr          # optional: the text in screenshots
 scripts/build-llama.sh && scripts/build-onnx.sh && swift build -c release --product digup
-hf download ggml-org/embeddinggemma-2-GGUF embeddinggemma-2-Q8_0.gguf mmproj-embeddinggemma-2-Q8_0.gguf \
-  --revision bfcd298762cc34d0357ece5ebdd31791a3a374d8 --local-dir ~/.local/share/DigUpPhotos/Models
-.build/release/digup index ~/Pictures && .build/release/digup search "dog on the beach"
+.build/release/digup serve ~/Pictures --open      # DigUp in the browser; it offers to download the model
 ```
+
+`digup serve` is DigUp's window where there's no menubar app: a page at http://127.0.0.1:7811/ to search, see the
+people on your photos and name them, and choose the folders. It indexes them in the background and looks for changes
+every ten minutes. Only this computer's browser gets in. From the terminal instead: `digup download` fetches the model
+(865 MB, checked against its SHA-256), then `digup index ~/Pictures` and `digup search "dog on the beach"`.
 
 `scripts/linux-test.sh` runs the tests in Docker, and CI does on every push (docs/ARCHITECTURE.md has the plan for the
 rest).
