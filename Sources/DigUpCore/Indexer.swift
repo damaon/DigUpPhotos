@@ -91,7 +91,11 @@ public final class Indexer {
     /// (no re-embedding), and files that are gone or newly excluded are removed.
     public func sync(_ roots: [URL]) throws -> SyncSummary {
         let crawl = Crawler.crawl(roots, options: options)
-        let existing = try store.files(under: roots.map { $0.standardizedFileURL.path })
+        // The walk reports real paths (/private/var where the root says /var): look for what's indexed under both.
+        let existing = try store.files(under: Array(Set(roots.flatMap { root -> [String] in
+            let path = root.standardizedFileURL.path
+            return [path, FolderSelection.realPath(path)]
+        })))
         var byPath: [String: FileRecord] = [:]
         var byInode: [String: FileRecord] = [:]
         for file in existing {

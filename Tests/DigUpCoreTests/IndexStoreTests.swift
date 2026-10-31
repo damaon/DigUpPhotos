@@ -174,5 +174,22 @@ import Testing
         #expect(try store.files(under: [drive.path]).count == 1)
     }
     #endif
+
+    /// A folder given by a path through a symlink (/tmp for /private/tmp on macOS): the walk reports real paths, and
+    /// the second sync finds what the first indexed under them rather than adding it again.
+    @Test func syncFindsFilesUnderTheRealPath() throws {
+        let real = URL(fileURLWithPath: FolderSelection.realPath(folder.path)).appendingPathComponent("library")
+        try FileManager.default.createDirectory(at: real.appendingPathComponent("photos"), withIntermediateDirectories: true)
+        try Data("a note".utf8).write(to: real.appendingPathComponent("photos/note.txt"))
+        let link = folder.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        let root = link.appendingPathComponent("photos")
+        let store = try IndexStore(directory: folder.appendingPathComponent("index"))
+        let indexer = try Indexer(store: store, options: IndexOptions(), reader: testReader,
+                                  makeEmbedder: { throw WorkerError.notFound("no model needed to sync") })
+        #expect(try indexer.sync([root]).added == 1)
+        let again = try indexer.sync([root])
+        #expect(again.added == 0 && again.unchanged == 1)
+    }
 }
 
