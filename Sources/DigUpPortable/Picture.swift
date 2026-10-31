@@ -1,4 +1,6 @@
+#if canImport(CHeif)
 import CHeif
+#endif
 import CStb
 import DigUpCore
 import Foundation
@@ -9,12 +11,15 @@ struct Picture {
     var height: Int
     var pixels: [UInt8]
 
-    /// HEIC, HEIF and AVIF through libheif (upright already: it applies the file's rotation); JPEG, PNG, GIF, BMP,
-    /// PSD, TGA and PNM through stb_image; raw photos by the JPEG they embed (`RawPreview`); anything else ffmpeg reads
-    /// (WebP, TIFF, JPEG XL where it's built with it) through ffmpeg. Nil when none of them can.
+    /// HEIC, HEIF and AVIF through libheif where it's there (upright already: it applies the file's rotation; on Windows
+    /// ffmpeg reads them); JPEG, PNG, GIF, BMP, PSD, TGA and PNM through stb_image; raw photos by the JPEG they embed
+    /// (`RawPreview`); anything else ffmpeg reads (WebP, TIFF, JPEG XL where it's built with it) through ffmpeg. Nil
+    /// when none of them can.
     static func decode(_ url: URL) -> (picture: Picture, exif: Exif)? {
         let ext = url.pathExtension.lowercased()
+        #if canImport(CHeif)
         if heifExtensions.contains(ext) { return decodeHEIF(url) }
+        #endif
         if rawExtensions.contains(ext) { return decodeRaw(url) }
         var width: Int32 = 0, height: Int32 = 0
         if let data = digup_stb_load_rgb(url.path, &width, &height) {
@@ -30,11 +35,13 @@ struct Picture {
     /// The stored size, without decoding the pixels (for the too-small check). A raw photo's is its preview's.
     static func size(of url: URL) -> (width: Int, height: Int)? {
         let ext = url.pathExtension.lowercased()
+        #if canImport(CHeif)
         if heifExtensions.contains(ext) {
             return withHEIF(url) { handle in
                 (Int(heif_image_handle_get_width(handle)), Int(heif_image_handle_get_height(handle)))
             }
         }
+        #endif
         if rawExtensions.contains(ext) { return RawPreview.largestJPEG(in: url).map { ($0.found.width, $0.found.height) } }
         var width: Int32 = 0, height: Int32 = 0
         if digup_stb_info(url.path, &width, &height) != 0 { return (Int(width), Int(height)) }
@@ -77,6 +84,7 @@ struct Picture {
         return (picture.oriented(exif.orientation), exif)
     }
 
+    #if canImport(CHeif)
     private static func withHEIF<T>(_ url: URL, _ body: (OpaquePointer) -> T?) -> T? {
         guard let context = heif_context_alloc() else { return nil }
         defer { heif_context_free(context) }
@@ -120,6 +128,7 @@ struct Picture {
             return (Picture(width: width, height: height, pixels: pixels), exif)
         }
     }
+    #endif
 
     /// Turned upright by an EXIF orientation (1 to 8).
     func oriented(_ orientation: Int) -> Picture {

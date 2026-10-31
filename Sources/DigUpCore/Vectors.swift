@@ -49,8 +49,12 @@ final class VectorStorage {
         let halfBytes = rows * Vectors.dimension * MemoryLayout<Float16>.stride
         let blockBytes = Self.blockRows * Vectors.dimension * MemoryLayout<Float>.stride
         bytes = halfBytes + blockBytes
+        #if os(Windows)
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: bytes, alignment: 64)
+        #else
         guard let raw = mmap(nil, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0), raw != MAP_FAILED
         else { return nil }
+        #endif
         self.raw = raw
         self.rows = rows
         halves = raw.bindMemory(to: Float16.self, capacity: rows * Vectors.dimension)
@@ -58,6 +62,10 @@ final class VectorStorage {
     }
 
     deinit {
+        #if os(Windows)
+        raw.deallocate()
+        #else
         munmap(raw, bytes)
+        #endif
     }
 }

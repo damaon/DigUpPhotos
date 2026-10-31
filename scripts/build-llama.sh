@@ -2,8 +2,8 @@
 # Builds llama.cpp (MIT), the embedding runtime: the pinned build tag plus scripts/llama.cpp-no-logits.patch, as static
 # libraries combined into Vendor/llama/lib/libllamacpp.a, with the headers in Vendor/llama/include (all out of git).
 # On macOS it runs on Metal, whose shaders are embedded and compiled on first use, so no Metal toolchain is needed; on
-# Linux on the CPU. CMake comes from PATH, or from a venv in Vendor/ (needs uv). Does nothing when that build is already
-# there; build.sh runs it every time.
+# Linux and Windows on the CPU (llamacpp.lib on Windows, built from Git Bash). CMake comes from PATH, or from a venv in
+# Vendor/ (needs uv). Does nothing when that build is already there; build.sh runs it every time.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 TAG=b11461   # the first tags with EmbeddingGemma 2 (text + vision + audio) are b11452+
@@ -14,7 +14,7 @@ PATCH=scripts/llama.cpp-no-logits.patch
 SOURCE=Vendor/llama.cpp
 OUT=Vendor/llama
 STAMP="$TAG $( (command -v sha256sum > /dev/null && sha256sum "$PATCH" || shasum -a 256 "$PATCH") | cut -c1-12)"
-if [[ -f "$OUT/lib/libllamacpp.a" && "$(cat "$OUT/BUILD" 2>/dev/null)" == "$STAMP" ]]; then
+if [[ ( -f "$OUT/lib/libllamacpp.a" || -f "$OUT/lib/llamacpp.lib" ) && "$(cat "$OUT/BUILD" 2>/dev/null)" == "$STAMP" ]]; then
   exit 0
 fi
 if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]]; then
@@ -43,7 +43,15 @@ GENERATOR=$(command -v ninja > /dev/null && echo Ninja || echo "Unix Makefiles")
 B=Vendor/llama-build
 LIBS=($B/src/libllama.a $B/tools/mtmd/libmtmd.a $B/ggml/src/libggml.a $B/ggml/src/libggml-base.a
   $B/ggml/src/libggml-cpu.a $B/vendor/hash/libvendor-hash.a)
-if [[ "$(uname)" == Darwin ]]; then
+WINDOWS=$([[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]] && echo 1 || echo "")
+if [[ -n $WINDOWS ]]; then
+  # Visual Studio's compiler (from Git Bash, as on GitHub's runners): .lib files in Release/ folders, with the DLL C
+  # runtime (/MD) that Swift links too.
+  GENERATOR="Visual Studio 17 2022"
+  PLATFORM=(-A x64 -DGGML_OPENMP=OFF -DGGML_BLAS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL)
+  LIBS=($B/src/Release/llama.lib $B/tools/mtmd/Release/mtmd.lib $B/ggml/src/Release/ggml.lib
+    $B/ggml/src/Release/ggml-base.lib $B/ggml/src/Release/ggml-cpu.lib $B/vendor/hash/Release/vendor-hash.lib)
+elif [[ "$(uname)" == Darwin ]]; then
   PLATFORM=(-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON)
   LIBS+=($B/ggml/src/ggml-metal/libggml-metal.a $B/ggml/src/ggml-blas/libggml-blas.a)
 else
@@ -55,11 +63,15 @@ cmake -S "$SOURCE" -B $B -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release "${PLATFORM[
   -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DLLAMA_BUILD_MTMD=ON \
   -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
   -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_OPENSSL=OFF > /dev/null
-cmake --build $B --config Release -j "$(getconf _NPROCESSORS_ONLN)" --target llama mtmd > /dev/null
+cmake --build $B --config Release -j "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" --target llama mtmd > /dev/null
 
 mkdir -p "$OUT/lib" "$OUT/include"
-rm -f "$OUT/lib/libllamacpp.a"
-if [[ "$(uname)" == Darwin ]]; then
+rm -f "$OUT/lib/libllamacpp.a" "$OUT/lib/llamacpp.lib"
+if [[ -n $WINDOWS ]]; then
+  VSWHERE="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+  LIBEXE=$("$VSWHERE" -latest -products '*' -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/lib.exe' | head -1 | tr -d '\r')
+  "$LIBEXE" -nologo -out:"$OUT/lib/llamacpp.lib" "${LIBS[@]}"
+elif [[ "$(uname)" == Darwin ]]; then
   xcrun libtool -static -no_warning_for_no_symbols -o "$OUT/lib/libllamacpp.a" "${LIBS[@]}"
 else
   { echo "create $OUT/lib/libllamacpp.a"; printf 'addlib %s\n' "${LIBS[@]}"; echo save; echo end; } | ar -M

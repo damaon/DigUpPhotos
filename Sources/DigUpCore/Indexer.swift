@@ -100,7 +100,7 @@ public final class Indexer {
         var byInode: [String: FileRecord] = [:]
         for file in existing {
             byPath[file.path] = file
-            byInode["\(file.device):\(file.inode)"] = file
+            if file.inode != 0 { byInode["\(file.device):\(file.inode)"] = file }   // Windows has none
         }
         let seen = Set(crawl.candidates.map(\.path))
         var movedFrom = Set<String>()

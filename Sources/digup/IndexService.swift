@@ -124,9 +124,17 @@ final class IndexService: @unchecked Sendable {
         let temp = FileManager.default.temporaryDirectory
         for name in (try? FileManager.default.contentsOfDirectory(atPath: temp.path)) ?? [] {
             guard name.hasPrefix("DigUp-"), let pid = Int32(name.dropFirst("DigUp-".count)),
-                  pid != getpid(), kill(pid, 0) != 0, errno == ESRCH else { continue }
+                  pid != ProcessInfo.processInfo.processIdentifier, !Self.isRunning(pid) else { continue }
             try? FileManager.default.removeItem(at: temp.appendingPathComponent(name))
         }
+    }
+
+    private static func isRunning(_ pid: Int32) -> Bool {
+        #if os(Windows)
+        true   // no way to ask here: its folder stays
+        #else
+        kill(pid, 0) == 0 || errno != ESRCH
+        #endif
     }
 
     /// The chosen folders that are there and readable right now; also what `pending` and the counts look at.

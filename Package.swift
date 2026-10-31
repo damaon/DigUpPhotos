@@ -36,30 +36,43 @@ targets += [
     .testTarget(name: "DigUpAppleTests", dependencies: ["DigUpApple", "DigUpCore"]),
 ]
 #else
-// What macOS ships and other systems don't: SQLite (libsqlite3-dev) and SHA-256 (swift-crypto, CryptoKit's API).
+// What macOS ships and other systems don't: SQLite (libsqlite3-dev on Linux; the amalgamation on Windows, fetched by
+// scripts/build-sqlite.sh) and SHA-256 (swift-crypto, CryptoKit's API).
 dependencies.append(.package(url: "https://github.com/apple/swift-crypto", exact: "4.5.2"))
 coreDependencies += ["CSQLite", .product(name: "Crypto", package: "swift-crypto")]
 coreTestDependencies.append(.product(name: "Crypto", package: "swift-crypto"))
 reader = "DigUpPortable"
+#if os(Windows)
+// No libheif here: HEIC and AVIF go through ffmpeg. ONNX Runtime's DLL goes next to the program.
+let portableLibraries: [Target.Dependency] = ["CStb", "CONNX"]
+let onnxFlags = ["-L\(Context.packageDirectory)/Vendor/onnxruntime/lib"]
+targets += [
+    .target(name: "CSQLite", path: "Vendor/sqlite", sources: ["sqlite3.c"], publicHeadersPath: "include",
+            cSettings: [.define("SQLITE_ENABLE_FTS5"), .define("SQLITE_THREADSAFE", to: "2"),
+                        .define("SQLITE_DEFAULT_WAL_SYNCHRONOUS", to: "1"), .define("SQLITE_OMIT_LOAD_EXTENSION")]),
+]
+#else
+let portableLibraries: [Target.Dependency] = ["CStb", "CHeif", "CONNX"]
+let onnxFlags = [
+    "-L\(Context.packageDirectory)/Vendor/onnxruntime/lib",
+    "-Xlinker", "-rpath", "-Xlinker", "$ORIGIN",
+    "-Xlinker", "-rpath", "-Xlinker", "\(Context.packageDirectory)/Vendor/onnxruntime/lib",
+]
 targets += [
     .systemLibrary(name: "CSQLite", path: "Sources/CSQLite", pkgConfig: "sqlite3", providers: [.apt(["libsqlite3-dev"])]),
     // HEIC and AVIF photos (libheif-dev, and libheif-plugin-libde265 to decode HEVC).
     .systemLibrary(name: "CHeif", path: "Sources/CHeif", pkgConfig: "libheif", providers: [.apt(["libheif-dev"])]),
+]
+#endif
+targets += [
     // JPEG, PNG, GIF and friends: stb_image, vendored; and stb_image_write, for thumbnails.
     .target(name: "CStb", path: "Sources/CStb", exclude: ["stb_image.h", "stb_image_write.h"]),
     // ONNX Runtime, for faces (scripts/build-onnx.sh puts Microsoft's build in Vendor/onnxruntime).
     .systemLibrary(name: "CONNX", path: "Sources/CONNX"),
     // MediaReading without Apple: stb_image and libheif, YuNet and SFace on ONNX Runtime, ffmpeg, poppler-utils,
     // tesseract.
-    .target(
-        name: "DigUpPortable",
-        dependencies: ["DigUpCore", "CStb", "CHeif", "CONNX"],
-        linkerSettings: [.unsafeFlags([
-            "-L\(Context.packageDirectory)/Vendor/onnxruntime/lib",
-            "-Xlinker", "-rpath", "-Xlinker", "$ORIGIN",
-            "-Xlinker", "-rpath", "-Xlinker", "\(Context.packageDirectory)/Vendor/onnxruntime/lib",
-        ])]
-    ),
+    .target(name: "DigUpPortable", dependencies: ["DigUpCore"] + portableLibraries,
+            linkerSettings: [.unsafeFlags(onnxFlags)]),
     .testTarget(name: "DigUpPortableTests", dependencies: ["DigUpPortable", "DigUpCore"]),
 ]
 #endif

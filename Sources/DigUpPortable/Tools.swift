@@ -5,9 +5,15 @@ import Foundation
 /// pdftotext and pdftoppm (PDF), and tesseract (text in pictures, optional). Found on PATH.
 enum Tools {
     static func find(_ name: String) -> URL? {
-        let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/local/bin:/usr/bin:/bin"
-        for folder in path.split(separator: ":") {
-            let url = URL(fileURLWithPath: String(folder)).appendingPathComponent(name)
+        #if os(Windows)
+        let (path, separator, file) = (ProcessInfo.processInfo.environment["Path"]
+                                       ?? ProcessInfo.processInfo.environment["PATH"] ?? "", ";", name + ".exe")
+        #else
+        let (path, separator, file) = (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/local/bin:/usr/bin:/bin",
+                                       ":", name)
+        #endif
+        for folder in path.split(separator: Character(separator)) where !folder.isEmpty {
+            let url = URL(fileURLWithPath: String(folder)).appendingPathComponent(file)
             if FileManager.default.isExecutableFile(atPath: url.path) { return url }
         }
         return nil

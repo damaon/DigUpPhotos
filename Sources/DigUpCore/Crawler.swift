@@ -78,19 +78,17 @@ public enum Crawler {
                 case .skip(let reason):
                     report.skipped[reason, default: 0] += 1
                 case .index(let kind):
-                    var info = stat()
-                    guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+                    guard let facts = FileFacts(url, values), facts.isRegular else {
                         report.skipped["link or special file", default: 0] += 1
                         return
                     }
-                    if isInTheCloud(info, values) {
+                    if facts.inTheCloud {
                         report.skipped["in the cloud, not downloaded", default: 0] += 1
                         return
                     }
                     guard foundPaths.insert(url.path).inserted else { return }
-                    let mtime = modificationTime(info)
-                    found.append(Candidate(path: url.path, kind: kind, size: Int64(info.st_size), mtime: mtime,
-                                           inode: UInt64(info.st_ino), device: UInt64(bitPattern: Int64(info.st_dev))))
+                    found.append(Candidate(path: url.path, kind: kind, size: facts.size, mtime: facts.mtime,
+                                           inode: facts.inode, device: facts.device))
                 }
             }
 

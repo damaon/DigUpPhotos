@@ -7,7 +7,9 @@ import LlamaRuntime
 /// The index the app keeps (and the CLI uses without `--index`).
 let defaultIndex = dataFolder.appendingPathComponent("index.noindex")
 
+#if !os(Windows)
 signal(SIGPIPE, SIG_IGN)   // a dead worker must surface as an error, not kill us
+#endif
 
 let usage = """
     digup: search your files by meaning (DigUp developer CLI)

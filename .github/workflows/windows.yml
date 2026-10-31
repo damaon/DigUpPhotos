@@ -1,0 +1,34 @@
+# The core, the readers, llama.cpp's runtime and the CLI (with `digup serve`) build and pass their tests on Windows
+# (docs/ARCHITECTURE.md). The model isn't downloaded here, so the reference-vector test is skipped.
+name: Windows
+
+on:
+  push:
+    branches: [main, windows]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: compnerd/gha-setup-swift@9ff1ee4c44888c5817fc14d1b257ac8cabb4935f # v0.5.1
+        with:
+          swift-version: swift-6.2-release
+          swift-build: 6.2-RELEASE
+      - name: ffmpeg (sound, video, WebP, HEIC)
+        run: choco install ffmpeg --no-progress -y > /dev/null
+      - name: SQLite, ONNX Runtime and the face models, llama.cpp
+        run: scripts/build-sqlite.sh && scripts/build-onnx.sh && scripts/build-llama.sh
+      - name: Build
+        run: swift build --build-tests
+      - name: Test
+        run: |
+          cp Vendor/onnxruntime/lib/*.dll "$(swift build --show-bin-path)/"
+          swift test --skip-build
