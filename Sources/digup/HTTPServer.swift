@@ -166,8 +166,10 @@ final class HTTPServer: @unchecked Sendable {
 enum Socket {
     #if os(Windows)
     typealias Handle = SOCKET
+    typealias Length = Int32
     #else
     typealias Handle = Int32
+    typealias Length = socklen_t
     #endif
 
     struct Failure: Error, CustomStringConvertible {
@@ -192,16 +194,17 @@ enum Socket {
         setsockopt(handle, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
         #endif
         var address = sockaddr_in()
-        address.sin_family = sa_family_t(AF_INET)
         address.sin_port = port.bigEndian
         #if os(Windows)
+        address.sin_family = ADDRESS_FAMILY(AF_INET)
         address.sin_addr.S_un.S_addr = UInt32(0x7F00_0001).bigEndian
         #else
+        address.sin_family = sa_family_t(AF_INET)
         address.sin_addr.s_addr = UInt32(0x7F00_0001).bigEndian   // 127.0.0.1: never reachable from the network
         #endif
         let bound = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(handle, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                bind(handle, $0, Length(MemoryLayout<sockaddr_in>.size))
             }
         }
         guard bound == 0 else {
@@ -216,7 +219,7 @@ enum Socket {
         guard Darwin.listen(handle, 64) == 0 else { throw Failure(description: "can't listen on port \(port)") }
         #endif
         var actual = sockaddr_in()
-        var size = socklen_t(MemoryLayout<sockaddr_in>.size)
+        var size = Length(MemoryLayout<sockaddr_in>.size)
         _ = withUnsafeMutablePointer(to: &actual) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(handle, $0, &size) }
         }
@@ -241,11 +244,13 @@ enum Socket {
 
     static func receive(_ connection: Handle) -> Data? {
         var buffer = [UInt8](repeating: 0, count: 16 * 1024)
-        #if os(Windows)
-        let count = Int(recv(connection, &buffer, Int32(buffer.count), 0))
-        #else
-        let count = recv(connection, &buffer, buffer.count, 0)
-        #endif
+        let count = buffer.withUnsafeMutableBytes { bytes -> Int in
+            #if os(Windows)
+            Int(recv(connection, bytes.baseAddress?.assumingMemoryBound(to: CChar.self), Int32(bytes.count), 0))
+            #else
+            recv(connection, bytes.baseAddress, bytes.count, 0)
+            #endif
+        }
         return count < 0 ? nil : Data(buffer[0..<count])
     }
 
@@ -255,7 +260,7 @@ enum Socket {
         while sent < data.count {
             let count = data[(data.startIndex + sent)...].withUnsafeBytes { bytes -> Int in
                 #if os(Windows)
-                Int(WinSDK.send(connection, bytes.baseAddress, Int32(bytes.count), 0))
+                Int(WinSDK.send(connection, bytes.baseAddress?.assumingMemoryBound(to: CChar.self), Int32(bytes.count), 0))
                 #elseif canImport(Glibc)
                 Glibc.send(connection, bytes.baseAddress, bytes.count, Int32(MSG_NOSIGNAL))
                 #else

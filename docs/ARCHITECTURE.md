@@ -56,6 +56,10 @@ It listens on 127.0.0.1 only, answers only requests for its own host name (no DN
 the SameSite=Strict cookie the page set; POSTs must be JSON from the page's origin. Files are served only when they're
 in the index. On macOS it can share the app's index: it never removes files from folders it wasn't told about.
 
+Around it, each system's way of being an app: `packaging/linux/install.sh` puts "DigUp" in the app menu and runs
+`digup serve` from login as a systemd user service; `packaging/windows/install.ps1` adds a Start menu shortcut and starts
+it at sign-in without a console window. Opened again while it runs, `digup serve --open` shows the running one.
+
 ### The MCP server
 
 `digup mcp` speaks MCP over stdio, so an agent can be pointed at it like any other command. Tools: `search`
@@ -86,6 +90,8 @@ raw.pixls.us): the embedded JPEG looks as ImageIO's decoding of the raw does (co
    follows in step 5, with llama.cpp built for Linux.
 5. `DigUpPortable`: image decoding (stb_image, libheif), EXIF in the core, faces (YuNet + SFace on ONNX Runtime), ffmpeg,
    poppler-utils, tesseract. Indexing works on Linux.
-6. Windows: the same targets with the Windows toolchain; paths and file watching.
+6. Windows: the same targets with the Windows toolchain (SQLite from the amalgamation, `scripts/build-sqlite.sh`; ONNX
+   Runtime's Windows build; llama.cpp with Visual Studio; HEIC through ffmpeg), built and tested by
+   `.github/workflows/windows.yml`. File watching is a sync every ten minutes, as on Linux.
 7. A UI beyond macOS: `digup serve`, a local web page, so one UI covers Linux and Windows. Done on Linux and macOS
    (2026-10-31).
