@@ -45,9 +45,9 @@ LIBS=($B/src/libllama.a $B/tools/mtmd/libmtmd.a $B/ggml/src/libggml.a $B/ggml/sr
   $B/ggml/src/libggml-cpu.a $B/vendor/hash/libvendor-hash.a)
 WINDOWS=$([[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]] && echo 1 || echo "")
 if [[ -n $WINDOWS ]]; then
-  # Visual Studio's compiler (from Git Bash, as on GitHub's runners): .lib files in Release/ folders, with the DLL C
-  # runtime (/MD) that Swift links too.
-  GENERATOR="Visual Studio 17 2022"
+  # Visual Studio's compiler (from Git Bash, as on GitHub's runners), whichever Visual Studio CMake finds: .lib files in
+  # Release/ folders, with the DLL C runtime (/MD) that Swift links too.
+  GENERATOR=""
   PLATFORM=(-A x64 -DGGML_OPENMP=OFF -DGGML_BLAS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL)
   LIBS=($B/src/Release/llama.lib $B/tools/mtmd/Release/mtmd.lib $B/ggml/src/Release/ggml.lib
     $B/ggml/src/Release/ggml-base.lib $B/ggml/src/Release/ggml-cpu.lib $B/vendor/hash/Release/vendor-hash.lib)
@@ -59,7 +59,7 @@ else
   PLATFORM=(-DGGML_OPENMP=OFF -DGGML_BLAS=OFF -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++)
 fi
 # Only the libraries: no tools, no server, nothing downloaded at build time.
-cmake -S "$SOURCE" -B $B -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release "${PLATFORM[@]}" \
+cmake -S "$SOURCE" -B $B ${GENERATOR:+-G "$GENERATOR"} -DCMAKE_BUILD_TYPE=Release "${PLATFORM[@]}" \
   -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DLLAMA_BUILD_MTMD=ON \
   -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
   -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_OPENSSL=OFF > /dev/null

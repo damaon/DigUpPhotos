@@ -1,6 +1,9 @@
 import DigUpCore
 import Foundation
 import LlamaRuntime
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// `digup serve`: DigUp in the browser, for where there's no menubar app (Linux, Windows; it runs on macOS too). A
 /// page on 127.0.0.1 to search, browse people and their photos, and choose the folders; indexing runs in this process,
@@ -12,7 +15,17 @@ import LlamaRuntime
 func serve(_ args: Arguments) throws -> Int32 {
     let app = try WebApp(index: args.indexFolder, options: args.options,
                          extraFolders: args.positional.map(Arguments.folderURL))
-    let server = try HTTPServer(port: UInt16(args.values["--port"] ?? "") ?? 7811) { app.handle($0) }
+    let port = UInt16(args.values["--port"] ?? "") ?? 7811
+    let server: HTTPServer
+    do {
+        server = try HTTPServer(port: port) { app.handle($0) }
+    } catch {
+        // Started again (from the app menu, say) while one is running: show that one.
+        guard DigUpServer.isRunning(port: port) else { throw error }
+        print("DigUp is already at http://127.0.0.1:\(port)/")
+        if args.flags.contains("--open") { Opener.open("http://127.0.0.1:\(port)/") }
+        return 0
+    }
     app.port = server.port
     let address = "http://127.0.0.1:\(server.port)/"
     print("DigUp is at \(address)  (Ctrl-C stops it)")
@@ -20,6 +33,22 @@ func serve(_ args: Arguments) throws -> Int32 {
     app.startIndexing()
     if args.flags.contains("--open") { Opener.open(address) }
     server.run()
+}
+
+enum DigUpServer {
+    /// Whether what answers on `port` is `digup serve`.
+    static func isRunning(port: UInt16) -> Bool {
+        let done = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var page = ""
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!)
+        request.timeoutInterval = 3
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            page = String(decoding: data ?? Data(), as: UTF8.self)
+            done.signal()
+        }.resume()
+        done.wait()
+        return page.contains("<title>DigUp</title>")
+    }
 }
 
 /// Folders and other choices made in the page, in `serve.json` in the index folder.
@@ -187,7 +216,7 @@ final class WebApp: @unchecked Sendable {
             "index": index.path,
         ]
         let progress = fetch.progress
-        out["model"] = ["ready": LlamaModels.complete, "downloading": progress.running, "done": progress.done,
+        out["model"] = ["ready": LlamaModels.complete && ModelFetch.missing.isEmpty, "downloading": progress.running, "done": progress.done,
                         "total": progress.total, "error": progress.error ?? NSNull(), "folder": ModelFiles.installed.path]
         if let counts = try? withSearchStore({ try $0.counts() }) {
             var files: [String: Int] = [:]

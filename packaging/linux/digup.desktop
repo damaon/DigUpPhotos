@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=DigUp
+GenericName=File search
+Comment=Find photos, videos and documents by what they show or say
+Exec=@DIGUP@ serve --open
+Icon=digup
+Terminal=false
+Categories=Utility;FileTools;Graphics;
+Keywords=search;photos;files;find;
+StartupNotify=false

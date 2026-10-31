@@ -1,0 +1,13 @@
+# DigUp in the background: the page at http://127.0.0.1:7811/ and indexing, from login on.
+[Unit]
+Description=DigUp: search your files by meaning
+
+[Service]
+ExecStart=@DIGUP@ serve
+Restart=on-failure
+RestartSec=10
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

@@ -6,14 +6,28 @@ import FoundationNetworking
 
 /// Fetches the model files into `ModelFiles.installed`, as the macOS app does on first launch: each file into a
 /// `.part` file first, given its name only once its SHA-256 checks out. A file already in the Hugging Face cache is
-/// copied from there. For `digup download` and `digup serve` (where nothing else would fetch it).
+/// copied from there. Where faces aren't found by Vision, YuNet and SFace come first (40 MB), so they're there before
+/// any photo is read. For `digup download` and `digup serve` (where nothing else would fetch them).
 final class ModelFetch: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     struct Progress {
         var done: Int64 = 0
-        var total: Int64 = ModelFiles.totalBytes
+        var total: Int64 = ModelFetch.files.reduce(0) { $0 + $1.bytes }
         var file: String?
         var error: String?
         var running = false
+    }
+
+    static var files: [ModelFiles.File] {
+        #if canImport(DigUpApple)
+        ModelFiles.all
+        #else
+        ModelFiles.faces + ModelFiles.all
+        #endif
+    }
+
+    /// The files not downloaded yet.
+    static var missing: [ModelFiles.File] {
+        files.filter { !FileManager.default.fileExists(atPath: ModelFiles.installed.appendingPathComponent($0.name).path) }
     }
 
     private let lock = NSLock()
@@ -45,14 +59,14 @@ final class ModelFetch: NSObject, URLSessionDownloadDelegate, @unchecked Sendabl
     func fetchAll(report: ((Progress) -> Void)? = nil) throws {
         let folder = ModelFiles.installed
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        for file in ModelFiles.all {
+        for file in Self.files {
             let target = folder.appendingPathComponent(file.name)
             defer { lock.withLock { finishedBefore += file.bytes; state.done = finishedBefore } }
             guard !FileManager.default.fileExists(atPath: target.path) else { continue }
             lock.withLock { state.file = file.name }
             let part = folder.appendingPathComponent(file.name + ".part")
             try? FileManager.default.removeItem(at: part)
-            if let cached = ModelFiles.cachedCopy(of: file) {
+            if file.source == nil, let cached = ModelFiles.cachedCopy(of: file) {
                 try FileManager.default.copyItem(at: cached, to: part)
             } else {
                 try download(file, to: part, report: report)
@@ -106,7 +120,7 @@ final class ModelFetch: NSObject, URLSessionDownloadDelegate, @unchecked Sendabl
 
 /// `digup download`: the model files, with progress on the terminal.
 func download(_ args: Arguments) throws {
-    let missing = ModelFiles.missing(in: ModelFiles.installed)
+    let missing = ModelFetch.missing
     guard !missing.isEmpty else {
         print("the model is there: \(tilde(ModelFiles.installed.path))")
         return

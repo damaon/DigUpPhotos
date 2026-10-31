@@ -19,10 +19,19 @@ public enum ModelFiles {
         public let name: String
         public let bytes: Int64
         public let sha256: String
+        /// Where it comes from when that isn't the model's Hugging Face repository.
+        public let source: URL?
+
+        public init(name: String, bytes: Int64, sha256: String, source: URL? = nil) {
+            self.name = name
+            self.bytes = bytes
+            self.sha256 = sha256
+            self.source = source
+        }
 
         /// Hugging Face's address for this file at the pinned revision (it redirects to a CDN that takes HTTP ranges).
         public var url: URL {
-            URL(string: "https://huggingface.co/\(ModelFiles.repository)/resolve/\(ModelFiles.revision)/\(name)")!
+            source ?? URL(string: "https://huggingface.co/\(ModelFiles.repository)/resolve/\(ModelFiles.revision)/\(name)")!
         }
     }
 
@@ -35,6 +44,19 @@ public enum ModelFiles {
     /// In download order.
     public static let all = [text, media]
     public static let totalBytes = all.reduce(0) { $0 + $1.bytes }
+
+    /// The face models where Vision and Core ML aren't (`DigUpPortable`): YuNet finds faces, SFace tells them apart.
+    /// OpenCV Zoo's (Apache-2.0), pinned by commit, as scripts/build-onnx.sh fetches them.
+    public static let faces = [
+        File(name: "yunet.onnx", bytes: 232_589,
+             sha256: "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+             source: URL(string: "https://media.githubusercontent.com/media/opencv/opencv_zoo/"
+                         + "f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/face_detection_yunet_2023mar.onnx")),
+        File(name: "sface.onnx", bytes: 38_696_353,
+             sha256: "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+             source: URL(string: "https://media.githubusercontent.com/media/opencv/opencv_zoo/"
+                         + "ba91a3b91d00d76e86540d4013f944bd6b514e39/models/face_recognition_sface/face_recognition_sface_2021dec.onnx")),
+    ]
 
     /// Where the app keeps them.
     public static let installed = dataFolder.appendingPathComponent("Models")
