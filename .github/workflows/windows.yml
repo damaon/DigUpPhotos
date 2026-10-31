@@ -24,11 +24,20 @@ jobs:
           swift-build: 6.2-RELEASE
       - name: ffmpeg (sound, video, WebP, HEIC)
         run: choco install ffmpeg --no-progress -y > /dev/null
+      # Each step's errors also become annotations, which the checks API shows without signing in.
       - name: SQLite, ONNX Runtime and the face models, llama.cpp
-        run: scripts/build-sqlite.sh && scripts/build-onnx.sh && scripts/build-llama.sh
+        run: |
+          set -o pipefail
+          (scripts/build-sqlite.sh && scripts/build-onnx.sh && scripts/build-llama.sh) 2>&1 | tee native.log \
+            || { tail -40 native.log | sed 's/^/::error::/'; exit 1; }
       - name: Build
-        run: swift build --build-tests
+        run: |
+          set -o pipefail
+          swift build --build-tests 2>&1 | tee build.log \
+            || { grep -E "error:|undefined|unresolved|LINK :|lld-link" build.log | sort -u | head -60 | sed 's/^/::error::/'; exit 1; }
       - name: Test
         run: |
+          set -o pipefail
           cp Vendor/onnxruntime/lib/*.dll "$(swift build --show-bin-path)/"
-          swift test --skip-build
+          swift test --skip-build 2>&1 | tee test.log \
+            || { grep -E "✘|error|Fatal|crash" test.log | head -60 | sed 's/^/::error::/'; tail -15 test.log | sed 's/^/::error::/'; exit 1; }
