@@ -200,6 +200,13 @@ struct Picture {
         return hash
     }
 
+    /// A JPEG (quality 85), for showing.
+    func writeJPEG(to url: URL) throws {
+        guard digup_stb_write_jpeg(url.path, Int32(width), Int32(height), pixels, 85) != 0 else {
+            throw ExtractError.unreadable("can't write \(url.lastPathComponent)")
+        }
+    }
+
     /// An uncompressed 24-bit BMP: lossless, and llama.cpp's image loader reads it, so nothing needs encoding.
     func writeBMP(to url: URL) throws {
         let rowBytes = (width * 3 + 3) & ~3

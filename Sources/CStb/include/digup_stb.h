@@ -1,5 +1,6 @@
-// stb_image (v2.30, public domain / MIT, Sources/CStb/stb_image.h) behind names of our own: llama.cpp links its own
-// copy of stb_image into the same binary, so ours is compiled static and only these are exported.
+// stb_image (v2.30) and stb_image_write (v1.16), public domain / MIT, in Sources/CStb, behind names of our own:
+// llama.cpp links its own copy of stb_image into the same binary, so ours is compiled static and only these are
+// exported.
 #pragma once
 #include <stdint.h>
 
@@ -11,3 +12,5 @@ uint8_t *digup_stb_load_rgb(const char *path, int *width, int *height);
 int digup_stb_info_memory(const uint8_t *bytes, int length, int *width, int *height);
 uint8_t *digup_stb_load_rgb_memory(const uint8_t *bytes, int length, int *width, int *height);
 void digup_stb_free(void *pixels);
+/// Writes 8-bit RGB as a JPEG (quality 1 to 100); 0 on failure.
+int digup_stb_write_jpeg(const char *path, int width, int height, const uint8_t *rgb, int quality);

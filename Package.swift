@@ -45,8 +45,8 @@ targets += [
     .systemLibrary(name: "CSQLite", path: "Sources/CSQLite", pkgConfig: "sqlite3", providers: [.apt(["libsqlite3-dev"])]),
     // HEIC and AVIF photos (libheif-dev, and libheif-plugin-libde265 to decode HEVC).
     .systemLibrary(name: "CHeif", path: "Sources/CHeif", pkgConfig: "libheif", providers: [.apt(["libheif-dev"])]),
-    // JPEG, PNG, GIF and friends: stb_image, vendored.
-    .target(name: "CStb", path: "Sources/CStb", exclude: ["stb_image.h"]),
+    // JPEG, PNG, GIF and friends: stb_image, vendored; and stb_image_write, for thumbnails.
+    .target(name: "CStb", path: "Sources/CStb", exclude: ["stb_image.h", "stb_image_write.h"]),
     // ONNX Runtime, for faces (scripts/build-onnx.sh puts Microsoft's build in Vendor/onnxruntime).
     .systemLibrary(name: "CONNX", path: "Sources/CONNX"),
     // MediaReading without Apple: stb_image and libheif, YuNet and SFace on ONNX Runtime, ffmpeg, poppler-utils,

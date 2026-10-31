@@ -54,6 +54,21 @@ import Testing
         #expect(read.width == 64 && read.height == 32 && read.pixels == pixels)
     }
 
+    /// Thumbnails for `digup serve`: JPEGs at most `maxPixel` on their longer side, of a picture and of a video frame.
+    @Test func thumbnailsAreSmallJPEGs() throws {
+        let bmp = folder.appendingPathComponent("photo.bmp"), out = folder.appendingPathComponent("thumb.jpg")
+        try Picture(width: 300, height: 150, pixels: [UInt8](repeating: 90, count: 300 * 150 * 3)).writeBMP(to: bmp)
+        try PortableMedia().thumbnail(of: bmp, kind: .image, at: nil, maxPixel: 100, to: out)
+        #expect(try Data(contentsOf: out).starts(with: [0xFF, 0xD8, 0xFF]))
+        #expect(Picture.size(of: out)! == (100, 50))
+        guard Tools.find("ffmpeg") != nil else { return }
+        let video = folder.appendingPathComponent("clip.mp4"), frame = folder.appendingPathComponent("frame.jpg")
+        try Tools.run("ffmpeg", ["-v", "error", "-nostdin", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=10",
+                                 video.path])
+        try PortableMedia().thumbnail(of: video, kind: .video, at: 1, maxPixel: 160, to: frame)
+        #expect(Picture.size(of: frame)! == (160, 120))
+    }
+
     @Test func imageIsPreparedForTheModel() throws {
         let url = folder.appendingPathComponent("photo.bmp")
         try Picture(width: 300, height: 200, pixels: [UInt8](repeating: 128, count: 300 * 200 * 3)).writeBMP(to: url)

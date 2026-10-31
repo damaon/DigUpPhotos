@@ -27,6 +27,9 @@ public protocol MediaReading: Sendable {
     func pageCount(of url: URL) -> Int?
     /// How long a sound or video is, cheaply (for estimates); nil when it can't tell.
     func duration(of url: URL) -> Double?
+    /// A JPEG at most `maxPixel` on its longer side, upright, written to `file`, for showing: a picture, a PDF's page
+    /// `at` (1-based), or a video's frame `at` seconds in. Throws for anything else.
+    func thumbnail(of url: URL, kind: FileKind, at: Double?, maxPixel: Int, to file: URL) throws
 }
 
 /// A picture made ready for the model by `MediaReading.image`.

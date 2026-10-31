@@ -68,6 +68,30 @@ public struct PortableMedia: MediaReading {
         }
     }
 
+    public func thumbnail(of url: URL, kind: FileKind, at: Double?, maxPixel: Int, to file: URL) throws {
+        switch kind {
+        case .image, .screenshot:
+            guard let (picture, _) = Picture.decode(url) else { throw ExtractError.unreadable("can't decode image") }
+            try picture.fitted(in: maxPixel).writeJPEG(to: file)
+        case .pdf:
+            let page = String(max(1, Int(at ?? 1)))
+            let out = file.deletingPathExtension()
+            try Tools.run("pdftoppm", ["-q", "-f", page, "-l", page, "-scale-to", String(maxPixel), "-jpeg",
+                                       "-singlefile", url.path, out.path])
+            if out.appendingPathExtension("jpg") != file {
+                try? FileManager.default.removeItem(at: file)
+                try FileManager.default.moveItem(at: out.appendingPathExtension("jpg"), to: file)
+            }
+        case .video:
+            let seconds = at ?? min(0.5, (duration(of: url) ?? 1) / 2)
+            try Tools.run("ffmpeg", ["-v", "error", "-nostdin", "-y", "-ss", String(seconds), "-i", url.path,
+                                     "-frames:v", "1", "-vf", "scale=w=\(maxPixel):h=\(maxPixel):force_original_aspect_ratio=decrease",
+                                     "-q:v", "4", file.path])
+        default:
+            throw ExtractError.unreadable("no picture of a \(kind.rawValue)")
+        }
+    }
+
     public func audioWindows(of url: URL, window: Double, hop: Double, to folder: URL) async throws
         -> (pieces: [MediaPiece], duration: Double) {
         try SoundWindows.cut(url, window: window, hop: hop, to: folder)

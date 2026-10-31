@@ -1,7 +1,10 @@
+import AVFoundation
 import CoreGraphics
 import CoreServices
 import DigUpCore
 import Foundation
+import ImageIO
+import PDFKit
 
 /// `MediaReading` with Apple's frameworks: ImageIO and Vision for pictures and faces, PDFKit, the Cocoa text system,
 /// and AVFoundation. Page counts and durations for estimates come from Spotlight first (nothing is decoded), falling
@@ -26,6 +29,36 @@ public struct AppleMedia: MediaReading {
 
     public func documentText(of url: URL) throws -> String {
         try DocExtractor.text(of: url)
+    }
+
+    public func thumbnail(of url: URL, kind: FileKind, at: Double?, maxPixel: Int, to file: URL) throws {
+        let image: CGImage?
+        switch kind {
+        case .image, .screenshot:
+            image = CGImageSourceCreateWithURL(url as CFURL, nil).flatMap {
+                CGImageSourceCreateThumbnailAtIndex($0, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                ] as CFDictionary)
+            }
+        case .pdf:
+            image = PDFDocument(url: url)?.page(at: max(0, Int(at ?? 1) - 1)).flatMap {
+                PDFExtractor.render($0, pixels: maxPixel)
+            }
+        case .video:
+            let time = CMTime(seconds: at ?? min(0.5, duration(of: url).map { $0 / 2 } ?? 0),
+                              preferredTimescale: 600)
+            image = try runBlocking {
+                let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: maxPixel, height: maxPixel)
+                return try await generator.image(at: time).image
+            }
+        default:
+            throw ExtractError.unreadable("no picture of a \(kind.rawValue)")
+        }
+        guard let image else { throw ExtractError.unreadable("can't decode it") }
+        try ImageExtractor.write(image, to: file, png: false)
     }
 
     public func audioWindows(of url: URL, window: Double, hop: Double, to folder: URL) async throws
