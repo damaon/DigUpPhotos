@@ -2,9 +2,9 @@ import DigUpCore
 import Foundation
 
 /// `MediaReading` without Apple's frameworks, for Linux (and Windows later): pictures through stb_image and libheif,
-/// EXIF through the core's reader, PDFs through poppler-utils, sound and video through ffmpeg, text in pictures through
-/// tesseract when it's installed. What it can't do yet: faces (people stay empty), Word and OpenDocument files, WebP
-/// and raw photos. docs/ARCHITECTURE.md has the plan.
+/// EXIF through the core's reader, faces through YuNet and SFace on ONNX Runtime (`PortableFaces`), PDFs through
+/// poppler-utils, sound and video through ffmpeg, text in pictures through tesseract when it's installed. What it can't
+/// do yet: Word, OpenDocument and RTF files, WebP and raw photos. docs/ARCHITECTURE.md has the plan.
 public struct PortableMedia: MediaReading {
     public init() {}
 
@@ -14,12 +14,13 @@ public struct PortableMedia: MediaReading {
         guard max(size.width, size.height) >= minSide else { throw ExtractError.tooSmall(size.width, size.height) }
         guard let (full, exif) = Picture.decode(url) else { throw ExtractError.unreadable("can't decode image") }
         let picture = full.fitted(in: maxPixel)
-        let quality = scoreQuality ? PhotoQuality.assess(picture.fitted(in: 256).gray, faceBoxes: []) : nil
+        let faces = detectFaces ? PortableFaces.detect(in: picture, full: full) : []
+        let quality = scoreQuality ? PhotoQuality.assess(picture.fitted(in: 256).gray, faceBoxes: faces.map(\.box)) : nil
         // BMP whether or not `png` asks for lossless: it is lossless, and the model reads it as it is.
         let out = folder.appendingPathComponent(UUID().uuidString + ".bmp")
         try picture.writeBMP(to: out)
         return PreparedImage(path: out.path, width: size.width, height: size.height, capture: exif.capture,
-                             quality: quality, faces: [])
+                             quality: quality, faces: faces)
     }
 
     public func screenText(of url: URL) -> String {

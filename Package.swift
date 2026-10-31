@@ -47,8 +47,19 @@ targets += [
     .systemLibrary(name: "CHeif", path: "Sources/CHeif", pkgConfig: "libheif", providers: [.apt(["libheif-dev"])]),
     // JPEG, PNG, GIF and friends: stb_image, vendored.
     .target(name: "CStb", path: "Sources/CStb", exclude: ["stb_image.h"]),
-    // MediaReading without Apple: stb_image and libheif, ffmpeg, poppler-utils, tesseract.
-    .target(name: "DigUpPortable", dependencies: ["DigUpCore", "CStb", "CHeif"]),
+    // ONNX Runtime, for faces (scripts/build-onnx.sh puts Microsoft's build in Vendor/onnxruntime).
+    .systemLibrary(name: "CONNX", path: "Sources/CONNX"),
+    // MediaReading without Apple: stb_image and libheif, YuNet and SFace on ONNX Runtime, ffmpeg, poppler-utils,
+    // tesseract.
+    .target(
+        name: "DigUpPortable",
+        dependencies: ["DigUpCore", "CStb", "CHeif", "CONNX"],
+        linkerSettings: [.unsafeFlags([
+            "-L\(Context.packageDirectory)/Vendor/onnxruntime/lib",
+            "-Xlinker", "-rpath", "-Xlinker", "$ORIGIN",
+            "-Xlinker", "-rpath", "-Xlinker", "\(Context.packageDirectory)/Vendor/onnxruntime/lib",
+        ])]
+    ),
     .testTarget(name: "DigUpPortableTests", dependencies: ["DigUpPortable", "DigUpCore"]),
 ]
 #endif

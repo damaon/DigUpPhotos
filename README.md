@@ -124,13 +124,13 @@ holds the queries ranking changes are measured with.
 ### On Linux
 
 The CLI (with `digup mcp`) runs on Linux too, on the CPU. It indexes photos (JPEG, PNG, HEIC, AVIF), videos, sound,
-PDFs and text, HTML and Markdown files; it doesn't group faces into people yet, or read Word and OpenDocument files,
-WebP or raw photos. On Ubuntu 24.04 with Swift 6.2:
+PDFs and text, HTML and Markdown files, and groups faces into people; it doesn't read Word and OpenDocument files, WebP
+or raw photos yet. On Ubuntu 24.04 with Swift 6.2:
 
 ```sh
-sudo apt install libsqlite3-dev libheif-dev libheif-plugin-libde265 ffmpeg poppler-utils cmake ninja-build
+sudo apt install libsqlite3-dev libheif-dev libheif-plugin-libde265 ffmpeg poppler-utils cmake ninja-build curl
 sudo apt install tesseract-ocr          # optional: the text in screenshots
-scripts/build-llama.sh && swift build -c release --product digup
+scripts/build-llama.sh && scripts/build-onnx.sh && swift build -c release --product digup
 hf download ggml-org/embeddinggemma-2-GGUF embeddinggemma-2-Q8_0.gguf mmproj-embeddinggemma-2-Q8_0.gguf \
   --revision bfcd298762cc34d0357ece5ebdd31791a3a374d8 --local-dir ~/.local/share/DigUpPhotos/Models
 .build/release/digup index ~/Pictures && .build/release/digup search "dog on the beach"

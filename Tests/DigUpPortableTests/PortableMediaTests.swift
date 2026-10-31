@@ -57,6 +57,35 @@ import Testing
         }
     }
 
+    /// As on macOS (FaceIdentityTests): a mark at the photo's left eye ends up at the template's left eye, and the
+    /// way back undoes the fit.
+    @Test func alignedFaceIsUpright() {
+        let (width, height) = (400, 300)
+        let points = FaceIdentity.template.map { CGPoint(x: $0.x * 2 + 100, y: $0.y * 2 + 40) }
+        var pixels = [UInt8](repeating: 0, count: width * height * 3)
+        for y in Int(points[0].y) - 6 ..< Int(points[0].y) + 6 {
+            for x in Int(points[0].x) - 6 ..< Int(points[0].x) + 6 { pixels[(y * width + x) * 3] = 255 }
+        }
+        let face = PortableFaces.aligned(Picture(width: width, height: height, pixels: pixels), points: points)
+        #expect(face.width == FaceIdentity.side && face.height == FaceIdentity.side)
+        func red(_ point: CGPoint) -> UInt8 { face.pixels[(Int(point.y) * face.width + Int(point.x)) * 3] }
+        #expect(red(FaceIdentity.template[0]) > 200)
+        #expect(red(FaceIdentity.template[4]) < 50)
+        let fit = FaceIdentity.fit(from: points, to: FaceIdentity.template)
+        for (point, expected) in zip(FaceIdentity.template.map(fit.inverse.apply), points) {
+            #expect(abs(point.x - expected.x) < 1e-6 && abs(point.y - expected.y) < 1e-6)
+        }
+    }
+
+    @Test(.enabled(if: PortableFaces.isAvailable)) func faceVectorsAreUnitLength() throws {
+        let gray = Picture(width: 224, height: 224, pixels: [UInt8](repeating: 150, count: 224 * 224 * 3))
+        let points = FaceIdentity.template.map { CGPoint(x: $0.x * 2, y: $0.y * 2) }
+        let vector = try #require(PortableFaces.vector(of: gray, points: points))
+        #expect(vector.count == FaceIdentity.dimension)
+        #expect(abs(vector.reduce(0) { $0 + $1 * $1 } - 1) < 0.001)
+        #expect(PortableFaces.find(in: gray).isEmpty) // a gray square is no face
+    }
+
     @Test func captureTimesAreWrittenAsOnMacOS() {
         #expect(Probe.internetDate("2024-07-14T18:03:27.000000Z") == "2024-07-14T18:03:27Z")
         #expect(Probe.internetDate("2024-07-14T20:03:27+0200") == "2024-07-14T18:03:27Z")

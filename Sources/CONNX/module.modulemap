@@ -1,0 +1,5 @@
+module CONNX [system] {
+    header "../../Vendor/onnxruntime/include/onnxruntime_c_api.h"
+    link "onnxruntime"
+    export *
+}

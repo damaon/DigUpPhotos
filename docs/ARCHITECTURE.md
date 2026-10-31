@@ -11,7 +11,7 @@ Package.swift
 Sources/
   DigUpCore/      the engine: crawler, index store (SQLite), search, people, albums, dates. Foundation only.
   DigUpApple/     what only Apple's frameworks do: Vision faces, Core ML (SFace), ImageIO, PDFKit, AVFoundation
-  DigUpPortable/  the same jobs on Linux and Windows: stb_image, libheif, ffmpeg, poppler-utils (faces: ONNX, to come)
+  DigUpPortable/  the same jobs on Linux and Windows: stb_image, libheif, YuNet + SFace on ONNX Runtime, ffmpeg, poppler
   CLlama/         llama.cpp, built by scripts/build-llama.sh (macOS, Linux and Windows alike)
   LlamaRuntime/   EmbeddingGemma 2 on llama.cpp: text, image and audio vectors
   digup/          the CLI: index, search, people, status, eval, and `digup mcp`
@@ -34,7 +34,7 @@ hands it to the indexer.
 | --- | --- | --- |
 | Decode and shrink a picture | ImageIO | stb_image, libheif |
 | EXIF: capture date, place, orientation | ImageIO | `Exif` in the core |
-| Faces and their vectors | Vision, SFace on Core ML | none yet (YuNet + SFace on ONNX Runtime) |
+| Faces and their vectors | Vision, SFace on Core ML | YuNet + SFace on ONNX Runtime |
 | PDF pages: text and pictures | PDFKit | poppler-utils |
 | Video frames, sound, capture date | AVFoundation | ffmpeg, ffprobe |
 | Rich documents (docx, odt, rtf) | the Cocoa text system | none yet |
@@ -53,11 +53,14 @@ writes (it never indexes or edits it) and uses the same query encoder as `digup 
 
 Each step lands as small commits that build and pass the tests on their own.
 
-Done: 1 to 4 (2026-10-30), and 5 but faces (2026-10-31). The CLI indexes and searches on Linux, and the tests run
-there (`scripts/linux-test.sh`, CI). On the CPU, llama.cpp makes the reference vectors Metal makes. The same 29 files
-(JPEG, HEIC, video, sound, PDF, text) indexed on both agree: every capture date; photos' vectors at cosine 0.986 to
-0.998 (decoding and shrinking differ a little); text and WAV at 1.000. What `DigUpPortable` doesn't do yet: faces
-(YuNet + SFace on ONNX Runtime), Word, OpenDocument and RTF files, WebP and raw photos, OCR without tesseract.
+Done: 1 to 5 (2026-10-31). The CLI indexes and searches on Linux, and the tests run there (`scripts/linux-test.sh`,
+CI). On the CPU, llama.cpp makes the reference vectors Metal makes. The same 29 files (JPEG, HEIC, video, sound, PDF,
+text) indexed on both agree: every capture date; photos' vectors at cosine 0.986 to 0.998 (decoding and shrinking
+differ a little); text and WAV at 1.000. Faces: on 160 photos of a real library, YuNet finds 213 faces where Vision
+finds 216 (199 the same), SFace gives them vectors at cosine 0.94 (median) to what macOS gives, and the people agree
+with macOS's at pair precision 0.98, recall 0.93. Against the library owner's own merges, Linux groups as well as macOS
+(precision 0.844 vs 0.842, recall 0.377 vs 0.360). What `DigUpPortable` doesn't do yet: Word, OpenDocument and RTF files,
+WebP and raw photos, OCR without tesseract.
 
 1. Vector math behind `#if canImport(Accelerate)`, with portable loops.
 2. `digup mcp`: the MCP server on macOS, over the current core.
@@ -65,7 +68,7 @@ there (`scripts/linux-test.sh`, CI). On the CPU, llama.cpp makes the reference v
    `DigUpCore`.
 4. SQLite through a system-library target, so the core builds and is tested in a Linux container (CI). The CLI
    follows in step 5, with llama.cpp built for Linux.
-5. `DigUpPortable`: image decoding (stb_image, libheif), EXIF in the core, ffmpeg, poppler-utils, tesseract. Indexing
-   works on Linux. Faces on ONNX Runtime still to come.
+5. `DigUpPortable`: image decoding (stb_image, libheif), EXIF in the core, faces (YuNet + SFace on ONNX Runtime), ffmpeg,
+   poppler-utils, tesseract. Indexing works on Linux.
 6. Windows: the same targets with the Windows toolchain; paths and file watching.
 7. A UI beyond macOS: likely a local web page served by `digup serve`, so one UI covers Linux and Windows.
