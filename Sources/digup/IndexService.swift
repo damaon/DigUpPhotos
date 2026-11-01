@@ -264,6 +264,8 @@ final class IndexService: @unchecked Sendable {
             fields["pending"] = pending
             fields["vectors"] = counts.vectors
             fields["unfinished"] = counts.unfinished   // long files with pages or chunks left to read
+            fields["facesChecked"] = counts.photoFaces.checked
+            fields["facesTotal"] = counts.photoFaces.total
         }
         emit(fields)
     }

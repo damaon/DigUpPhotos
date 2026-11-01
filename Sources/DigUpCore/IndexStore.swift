@@ -527,6 +527,15 @@ public final class IndexStore {
         /// Long files still being read (`unfinishedCount`), and their pages and chunks left.
         public var unfinished = 0
         public var left = 0
+
+        /// Photos read for faces with today's `FaceDetector`, of all the photos that will be (screenshots aren't;
+        /// skipped and failed ones never are). A face-model change sets photos back to pending, so `checked` drops
+        /// until they're read again, and people are grouped from what's checked so far.
+        public var photoFaces: (checked: Int, total: Int) {
+            let states = byKindAndState[FileKind.image.rawValue] ?? [:]
+            let checked = (states["done"] ?? 0) + (states["partial"] ?? 0)
+            return (checked, checked + (states["pending"] ?? 0))
+        }
     }
 
     public func counts() throws -> Counts {

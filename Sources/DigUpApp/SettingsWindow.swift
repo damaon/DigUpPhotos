@@ -488,6 +488,23 @@ private struct PeopleSettings: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            if let faces = state.model.facesLine {
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(faces).font(.system(size: 13, weight: .semibold))
+                        if let progress = state.model.facesProgress {
+                            ProgressView(value: progress).controlSize(.small)
+                        }
+                    }
+                } footer: {
+                    Text("People are grouped from the photos checked so far, so some may be missing until the rest are."
+                         + (state.model.status.waitingFor == "on battery"
+                            ? " Plug in a charger, or turn on “\(AppSettings.batteryTitle)” in General." : ""))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             Section {
                 if state.people.isEmpty {
                     Text("No people yet. Index photos that show faces, then name them here.")
@@ -755,6 +772,7 @@ private struct IndexProgress: View {
             text += " · \(status.unfinished.formatted()) long \(status.unfinished == 1 ? "file" : "files") to finish"
         }
         if model.download.isActive { text += " · model \(model.download.progressText)" }
+        if let faces = model.facesLine { text += "\n" + faces }
         return text
     }
 }

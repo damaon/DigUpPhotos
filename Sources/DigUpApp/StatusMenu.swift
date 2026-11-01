@@ -202,7 +202,7 @@ struct MenuStatusView: View {
                 Text(detail)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(3)
             }
             if let progress = model.progress {
                 ProgressView(value: progress)
@@ -224,7 +224,7 @@ struct MenuStatusView: View {
             root.lastPathComponent + (missing.contains(root.path) ? " (not connected)"
                                       : unreadable.contains(root.path) ? " (no access)" : "")
         }
-        return "In " + names.joined(separator: ", ")
+        return "In " + names.joined(separator: ", ") + (model.facesLine.map { "\n" + $0 } ?? "")
     }
 }
 

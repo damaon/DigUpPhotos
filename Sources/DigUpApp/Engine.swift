@@ -29,6 +29,9 @@ nonisolated struct EngineStatus: Sendable, Equatable {
     var pending = 0      // waiting to be embedded
     var unfinished = 0   // long files with pages or chunks still to read (the backfill's rules hold them up too)
     var vectors = 0
+    /// Photos read for faces with today's face model, of all photos that will be (`IndexStore.Counts.photoFaces`).
+    var facesChecked = 0
+    var facesTotal = 0
     var paused = false
     var waitingFor: String?   // why the backfill waits ("on battery"), if it does
     /// The helper found no model yet (it's downloading): files are found and named, nothing gets embedded.
@@ -282,6 +285,7 @@ nonisolated final class Engine: @unchecked Sendable {
             $0.pending = pending
             $0.vectors = counts.vectors
             $0.unfinished = counts.unfinished
+            ($0.facesChecked, $0.facesTotal) = counts.photoFaces
         }
     }
 
@@ -468,6 +472,8 @@ nonisolated final class Engine: @unchecked Sendable {
                 $0.pending = event["pending"] as? Int ?? 0
                 $0.vectors = event["vectors"] as? Int ?? 0
                 $0.unfinished = event["unfinished"] as? Int ?? 0
+                $0.facesChecked = event["facesChecked"] as? Int ?? 0
+                $0.facesTotal = event["facesTotal"] as? Int ?? 0
             }
         }
     }

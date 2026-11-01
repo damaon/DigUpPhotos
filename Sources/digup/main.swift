@@ -422,6 +422,10 @@ func status(_ args: Arguments) throws {
         let total = states.values.reduce(0, +)
         print("  \(pad(kind.rawValue, 11)) \(lpad(number(total), 6))   " + statesLine(states))
     }
+    let faces = counts.photoFaces
+    if faces.checked < faces.total {
+        print("faces: \(number(faces.checked)) of \(number(faces.total)) photos checked (people come from these)")
+    }
     if counts.unfinished > 0 {
         print("long files still being read: \(number(counts.unfinished)) (\(number(counts.left)) pages and chunks left)")
     }

@@ -118,6 +118,14 @@ import Testing
         #expect(try store.pendingCount() == 2)
     }
 
+    @Test func photoFacesCountOnlyPhotosThatGetFaces() {
+        var counts = IndexStore.Counts()
+        counts.byKindAndState = ["image": ["done": 7, "partial": 1, "pending": 2, "skipped": 4, "failed": 1],
+                                 "screenshot": ["pending": 5], "video": ["done": 3]]
+        #expect(counts.photoFaces == (checked: 8, total: 10))
+        #expect(IndexStore.Counts().photoFaces == (checked: 0, total: 0))
+    }
+
     @Test func modelFileHashesStreamInPieces() throws {
         let small = folder.appendingPathComponent("abc")
         try Data("abc".utf8).write(to: small)

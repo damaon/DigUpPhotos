@@ -71,6 +71,7 @@ progress { width: 220px; height: 6px; accent-color: var(--accent); }
 mark { background: color-mix(in srgb, var(--accent) 25%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
 .more { margin: 18px 0; text-align: center; }
 .empty { color: var(--muted); padding: 48px 0; text-align: center; }
+.facesNote { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
 .people { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 16px; }
 .person { text-align: center; cursor: pointer; }
 .face { width: 110px; height: 110px; border-radius: 50%; overflow: hidden; position: relative; margin: 0 auto 8px;
@@ -367,19 +368,28 @@ function faceCrop(person, size) {
   return box;
 }
 
+// "Faces: 8,978 of 10,044 photos checked", while photos are still to be read for faces; people come from those read.
+function facesLine(s) {
+  const f = s && s.faces;
+  if (!f || f.checked >= f.total) return "";
+  return `Faces: ${f.checked.toLocaleString()} of ${f.total.toLocaleString()} photos checked`;
+}
+
 async function renderPeople(selected) {
   const tab = $("#tab-people");
   const people = await loadPeople().catch(e => { tab.replaceChildren(el("div", { className: "empty", textContent: e.message })); });
   if (!people) return;
+  const faces = facesLine(state.status);
+  const note = faces ? [el("p", { className: "facesNote", textContent: `${faces}. People are grouped from these, so some may be missing until the rest are read.` })] : [];
   if (!people.length) {
-    tab.replaceChildren(el("div", { className: "empty", textContent: "No people yet. They show up once photos with faces are indexed." }));
+    tab.replaceChildren(...note, el("div", { className: "empty", textContent: "No people yet. They show up once photos with faces are indexed." }));
     return;
   }
   if (selected != null) return renderPerson(people.find(p => p.id === selected));
   const grid = el("div", { className: "people" }, ...people.map(person => el("div", { className: "person", onclick: () => renderPerson(person) },
     faceCrop(person, 110), el("div", { className: "pname", textContent: person.displayName }),
     el("div", { className: "count", textContent: `${person.photos} photo${person.photos === 1 ? "" : "s"}` }))));
-  tab.replaceChildren(grid);
+  tab.replaceChildren(...note, grid);
 }
 
 async function renderPerson(person) {
@@ -441,6 +451,7 @@ function fillCounts(s) {
   const parts = Object.entries(s.files || {}).map(([kind, count]) =>
     el("span", {}, el("b", { textContent: count.toLocaleString() }), ` ${kindNames[kind] || kind}`));
   if (s.pending) parts.push(el("span", {}, el("b", { textContent: s.pending.toLocaleString() }), " still to read"));
+  if (facesLine(s)) parts.push(el("span", { textContent: facesLine(s) }));
   parts.push(el("span", { textContent: `Index: ${s.index}` }));
   counts.replaceChildren(...parts);
 }

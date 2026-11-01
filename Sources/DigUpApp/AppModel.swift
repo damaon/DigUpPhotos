@@ -39,16 +39,40 @@ final class AppModel {
             if let line = downloadLine { return line }
             let waiting = "\(status.pending.formatted()) \(status.pending == 1 ? "file" : "files") waiting"
             if status.pending > 0, status.paused { return "Paused · \(waiting)" }
-            if status.pending > 0, let reason = status.waitingFor { return "\(waiting) · \(reason)" }
+            if status.pending > 0, let reason = status.waitingFor { return "\(waiting) \(Self.until(reason))" }
             if status.pending > 0 { return "\(waiting) to be indexed" }
             if status.unfinished > 0 {
                 let rest = "\(status.unfinished.formatted()) long \(status.unfinished == 1 ? "file" : "files") to finish"
                 if status.paused { return "Paused · \(rest)" }
-                if let reason = status.waitingFor { return "\(rest) · \(reason)" }
+                if let reason = status.waitingFor { return "\(rest) \(Self.until(reason))" }
             }
             return "\(status.searchable.formatted()) \(status.searchable == 1 ? "file" : "files") indexed"
                 + (status.paused ? " · paused" : "")
         }
+    }
+
+    /// Why the backfill waits, as the end of a sentence: "for a charger", "· Low Power Mode".
+    static func until(_ reason: String) -> String {
+        reason == "on battery" ? "for a charger" : "· \(reason)"
+    }
+
+    /// While photos are still to be read for faces: how far that is, and what it waits for. People are grouped from
+    /// the photos read so far, so this is why some are missing. "Faces: 8,978 of 10,044 photos checked · waits for a
+    /// charger"; nil once every photo is checked.
+    var facesLine: String? {
+        let status = self.status
+        guard hasFolders, status.facesTotal > status.facesChecked else { return nil }
+        let line = "Faces: \(status.facesChecked.formatted()) of \(status.facesTotal.formatted()) photos checked"
+        if status.paused { return line + " · paused" }
+        if let reason = status.waitingFor { return line + (reason == "on battery" ? " · waits for a charger" : " · waits (\(reason))") }
+        return line
+    }
+
+    /// 0…1 of the photos checked for faces, while some are still to be.
+    var facesProgress: Double? {
+        let status = self.status
+        guard status.facesTotal > status.facesChecked else { return nil }
+        return Double(status.facesChecked) / Double(status.facesTotal)
     }
 
     /// While the model isn't there, how its download goes.

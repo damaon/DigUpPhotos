@@ -229,6 +229,7 @@ final class WebApp: @unchecked Sendable {
             out["pending"] = pending
             out["vectors"] = counts.vectors
             out["unfinished"] = counts.unfinished
+            out["faces"] = ["checked": counts.photoFaces.checked, "total": counts.photoFaces.total]
         }
         return out
     }

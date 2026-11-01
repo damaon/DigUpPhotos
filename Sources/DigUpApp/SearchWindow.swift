@@ -533,6 +533,18 @@ struct SearchWindowView: View {
             if !search.people.isEmpty {
                 PersonFilters(search: search)
             }
+            if let faces = model.facesLine {
+                Button {
+                    app.showSettings(.people)
+                } label: {
+                    Label(faces + ". Some people may be missing.", systemImage: "person.crop.circle.badge.clock")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .help("People are grouped from the photos checked so far")
+            }
         }
         // Indexing groups people again as faces come in.
         .onChange(of: model.status) {
