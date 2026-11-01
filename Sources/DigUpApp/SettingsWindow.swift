@@ -141,15 +141,29 @@ final class SettingsState {
         people = await app.engine.people()
     }
 
-    func mergePeople(keeper: Int64, other: Int64) async {
-        await app.engine.mergePeople(keeper: keeper, other: other)
-        people = await app.engine.people()
-        app.albumsWindow?.albums.refreshPeople()
-        app.searchWindow?.search.refreshPeople()
+    /// Changes to people that Undo takes back, the latest last: what was done ("Merged Person 12 into Anna") and how
+    /// people were before it. Merges happen at once, without asking; Undo is how a wrong one is taken back.
+    private(set) var undoable: [(title: String, before: PeopleSnapshot)] = []
+
+    func mergePeople(_ other: Person, into keeper: Person) async {
+        if let before = await app.engine.mergePeople(keeper: keeper.id, other: other.id) {
+            undoable.append(("Merged \(other.displayName) into \(keeper.displayName)", before))
+        }
+        await peopleChanged()
     }
 
     func undoMerges() async {
-        await app.engine.undoMerges()
+        if let before = await app.engine.undoMerges() { undoable.append(("Undid all merges", before)) }
+        await peopleChanged()
+    }
+
+    func undo() async {
+        guard let last = undoable.popLast() else { return }
+        await app.engine.restorePeople(last.before)
+        await peopleChanged()
+    }
+
+    private func peopleChanged() async {
         people = await app.engine.people()
         app.albumsWindow?.albums.refreshPeople()
         app.searchWindow?.search.refreshPeople()
@@ -447,11 +461,9 @@ private struct PeopleSettings: View {
     @State private var draftNames: [Int64: String] = [:]
     /// The person who stays. The next pick is merged into them.
     @State private var mergeKeeper: Int64?
-    @State private var pending: PendingMerge?
     @State private var suggestions: [(first: Int64, second: Int64, score: Float)] = []
     /// Suggestions turned down with "Not the same", which the menu can bring back.
     @State private var dismissed = 0
-    @State private var confirmingUndo = false
 
     private struct Suggestion: Identifiable {
         var first: Int64
@@ -464,14 +476,17 @@ private struct PeopleSettings: View {
         suggestions.map { Suggestion(first: $0.first, second: $0.second, score: $0.score) }
     }
 
-    private struct PendingMerge: Identifiable {
-        var keeper: Person
-        var other: Person
-        var id: String { "\(keeper.id)-\(other.id)" }
-    }
-
     var body: some View {
         Form {
+            if let last = state.undoable.last {
+                Section {
+                    HStack {
+                        Text(last.title).lineLimit(1)
+                        Spacer(minLength: 8)
+                        Button("Undo") { Task { await state.undo() } }
+                    }
+                }
+            }
             if !suggestions.isEmpty, mergeKeeper == nil {
                 Section {
                     ForEach(suggestionRows) { pair in
@@ -514,7 +529,7 @@ private struct PeopleSettings: View {
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
-                ForEach(state.people) { person in
+                ForEach(listed) { person in
                     personRow(person)
                 }
             } header: {
@@ -545,36 +560,19 @@ private struct PeopleSettings: View {
         .task(id: state.people.map(\.id)) {
             await loadSuggestions()
         }
-        .confirmationDialog("Undo all merges?", isPresented: $confirmingUndo, titleVisibility: .visible) {
-            Button("Undo Merges", role: .destructive) {
-                Task { await state.undoMerges() }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Faces are grouped again as if nothing had been merged. Names stay.")
-        }
-        .confirmationDialog(pending.map { "Merge \($0.other.displayName) into \($0.keeper.displayName)?" } ?? "Merge?",
-                            isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
-                            titleVisibility: .visible) {
-            Button("Merge", role: .destructive) {
-                guard let pending else { return }
-                let other = pending.other.id
-                Task {
-                    await state.mergePeople(keeper: pending.keeper.id, other: other)
-                    mergeKeeper = nil
-                    draftNames[other] = nil
-                }
-                self.pending = nil
-            }
-            Button("Cancel", role: .cancel) { pending = nil }
-        } message: {
-            if let pending {
-                Text("\(pending.other.displayName)’s \(pending.other.photoCount) "
-                     + "\(pending.other.photoCount == 1 ? "photo" : "photos") move to \(pending.keeper.displayName). "
-                     + "Both face embeddings stay, so filtering \(pending.keeper.displayName) finds either one. "
-                     + "\(pending.keeper.displayName)’s name is kept.")
-            }
-        }
+    }
+
+    private func merge(_ other: Person, into keeper: Person) {
+        mergeKeeper = nil
+        draftNames[other.id] = nil
+        Task { await state.mergePeople(other, into: keeper) }
+    }
+
+    /// Named people first, alphabetically, as everywhere else; while merging, the one who stays and then whoever is in
+    /// the most photos, since the big groups are the ones worth merging.
+    private var listed: [Person] {
+        guard let keeper = mergeKeeper else { return state.people }
+        return state.people.filter { $0.id == keeper } + Person.byPhotos(state.people.filter { $0.id != keeper })
     }
 
     private func suggestionRow(keeper: Person, other: Person, score: Float) -> some View {
@@ -598,7 +596,7 @@ private struct PeopleSettings: View {
             }
             .controlSize(.small)
             .help("Stop suggesting these two")
-            Button("Merge") { pending = PendingMerge(keeper: keeper, other: other) }
+            Button("Merge") { merge(other, into: keeper) }
                 .controlSize(.small)
         }
     }
@@ -614,7 +612,7 @@ private struct PeopleSettings: View {
             }
             .disabled(dismissed == 0)
             Divider()
-            Button("Undo All Merges…", role: .destructive) { confirmingUndo = true }
+            Button("Undo All Merges") { Task { await state.undoMerges() } }
         } label: {
             Image(systemName: "ellipsis.circle")
         }
@@ -653,9 +651,7 @@ private struct PeopleSettings: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
         } else if let keeper = mergeKeeper, let kept = self.person(keeper) {
-            Button("Merge") {
-                pending = PendingMerge(keeper: kept, other: person)
-            }
+            Button("Merge") { merge(person, into: kept) }
             .controlSize(.small)
             .help("Merge into \(kept.displayName)")
         } else {

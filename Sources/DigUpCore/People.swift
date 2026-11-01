@@ -24,6 +24,32 @@ public struct Person: Sendable, Equatable, Identifiable {
         if let name, !name.isEmpty { return name }
         return "Person \(id)"
     }
+
+    /// Most photos first (then most faces), for picking whom to merge: the ones worth merging are the big ones.
+    public static func byPhotos(_ people: [Person]) -> [Person] {
+        people.sorted {
+            ($0.photoCount, $0.faceCount, -$0.id) > ($1.photoCount, $1.faceCount, -$1.id)
+        }
+    }
+}
+
+/// People as they were before a merge (`IndexStore.peopleSnapshot`), to undo it with `restorePeople`.
+public struct PeopleSnapshot: Sendable, Equatable {
+    struct Row: Sendable, Equatable {
+        var id: Int64
+        var name: String?
+        var exemplar: Int64?
+        var locked: Bool
+    }
+
+    struct Face: Sendable, Equatable {
+        var id: Int64
+        var person: Int64?
+        var pinned: Bool
+    }
+
+    var people: [Row] = []
+    var faces: [Face] = []
 }
 
 /// A person's exemplar face, for a circular thumbnail.
@@ -330,8 +356,11 @@ extension IndexStore {
     /// Merges `other` into `keeper`: all faces move, then `other` is deleted. Keeps `keeper`'s name, or takes `other`'s
     /// when `keeper` has none. The two faces the user saw stay one person when people are grouped again, each drawing
     /// the faces like it.
-    public func mergePeople(keeper: Int64, other: Int64) throws {
-        guard keeper != other else { return }
+    /// Returns how people were before, for `restorePeople` (Undo).
+    @discardableResult
+    public func mergePeople(keeper: Int64, other: Int64) throws -> PeopleSnapshot {
+        let before = try peopleSnapshot()
+        guard keeper != other else { return before }
         try db.transaction {
             try pinShownFace(of: keeper)
             try pinShownFace(of: other)
@@ -348,6 +377,46 @@ extension IndexStore {
         }
         // Faces like either look join them now, not at the next grouping (under a second for ~1,500 faces).
         try regroupPeople()
+        return before
+    }
+
+    /// Who every face was and every person's name, thumbnail and lock: what a merge, or undoing every merge, changes.
+    public func peopleSnapshot() throws -> PeopleSnapshot {
+        var snapshot = PeopleSnapshot()
+        try db.query("SELECT id, name, exemplar, locked FROM people ORDER BY id") {
+            snapshot.people.append(.init(id: $0.int(0), name: $0.text(1), exemplar: $0.isNull(2) ? nil : $0.int(2),
+                                         locked: $0.int(3) != 0))
+        }
+        try db.query("SELECT id, person, pinned FROM faces ORDER BY id") {
+            snapshot.faces.append(.init(id: $0.int(0), person: $0.isNull(1) ? nil : $0.int(1), pinned: $0.int(2) != 0))
+        }
+        return snapshot
+    }
+
+    /// Puts people back as `snapshot` had them (Undo). Faces found since keep their person; people made since that
+    /// have no faces left go.
+    public func restorePeople(_ snapshot: PeopleSnapshot) throws {
+        try db.transaction {
+            for person in snapshot.people {
+                try db.run("""
+                    INSERT INTO people(id, name, exemplar, locked) VALUES(?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET name = excluded.name, exemplar = excluded.exemplar,
+                                                  locked = excluded.locked
+                    """, [.int(person.id), person.name.map { .text($0) } ?? .null,
+                          person.exemplar.map { .int($0) } ?? .null, .int(person.locked ? 1 : 0)])
+            }
+            for face in snapshot.faces {
+                try db.run("UPDATE faces SET person = ?, pinned = ? WHERE id = ?",
+                           [face.person.map { .int($0) } ?? .null, .int(face.pinned ? 1 : 0), .int(face.id)])
+            }
+            let kept = Set(snapshot.people.map(\.id))
+            var empty: [Int64] = []
+            try db.query("SELECT id FROM people p WHERE NOT EXISTS (SELECT 1 FROM faces f WHERE f.person = p.id)") {
+                empty.append($0.int(0))
+            }
+            for id in empty where !kept.contains(id) { try db.run("DELETE FROM people WHERE id = ?", [.int(id)]) }
+            try bumpPeopleGeneration()
+        }
     }
 
     /// The user says these two aren't one person: they're not suggested again.
@@ -370,7 +439,10 @@ extension IndexStore {
 
     /// Takes back every merge: people are grouped again as if the user had only named them (a named person keeps the
     /// face on their thumbnail). Names stay.
-    public func undoMerges() throws {
+    /// Returns how people were before, for `restorePeople`.
+    @discardableResult
+    public func undoMerges() throws -> PeopleSnapshot {
+        let before = try peopleSnapshot()
         try db.transaction {
             try db.execute("""
                 UPDATE people SET locked = 0 WHERE name IS NULL;
@@ -381,6 +453,7 @@ extension IndexStore {
             for id in named { try pinShownFace(of: id) }
         }
         try regroupPeople()
+        return before
     }
 
     // MARK: Grouping

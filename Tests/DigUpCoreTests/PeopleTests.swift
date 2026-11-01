@@ -203,6 +203,44 @@ import Testing
     }
 
     /// The user's merge stands when faces are grouped again, though the faces look like two people.
+    @Test func mergeListsPutTheMostPhotosFirst() {
+        let people = [Person(id: 1, name: "Anna", faceCount: 3, photoCount: 2, exemplarFace: nil),
+                      Person(id: 2, name: nil, faceCount: 40, photoCount: 30, exemplarFace: nil),
+                      Person(id: 3, name: nil, faceCount: 6, photoCount: 2, exemplarFace: nil),
+                      Person(id: 4, name: nil, faceCount: 3, photoCount: 2, exemplarFace: nil)]
+        #expect(Person.byPhotos(people).map(\.id) == [2, 3, 1, 4])
+    }
+
+    @Test func undoPutsAMergeBack() throws {
+        let store = try IndexStore(directory: folder)
+        var faces = Faces()
+        let crowd = try addCrowd(store, &faces)
+        try store.clusterPeople(force: true)
+        let a = try person(store, file: crowd[0]), b = try person(store, file: crowd[12])
+        try store.renamePerson(b, to: "Bob")
+        let before = try store.peopleSnapshot(), people = try store.people()
+        let undo = try store.mergePeople(keeper: a, other: b)
+        #expect(undo == before)
+        #expect(try store.people().count == people.count - 1)
+        try store.restorePeople(undo)
+        #expect(try store.peopleSnapshot() == before)
+        #expect(try store.people() == people)
+        #expect(try person(store, file: crowd[12]) == b)
+    }
+
+    @Test func undoPutsUndoingEveryMergeBack() throws {
+        let store = try IndexStore(directory: folder)
+        var faces = Faces()
+        let crowd = try addCrowd(store, &faces)
+        try store.clusterPeople(force: true)
+        let a = try person(store, file: crowd[0]), b = try person(store, file: crowd[12])
+        try store.mergePeople(keeper: a, other: b)
+        let merged = try store.peopleSnapshot()
+        try store.restorePeople(try store.undoMerges())
+        #expect(try store.peopleSnapshot() == merged)
+        #expect(try person(store, file: crowd[12]) == a)
+    }
+
     @Test func mergesSurviveGroupingAgain() throws {
         let store = try IndexStore(directory: folder)
         var faces = Faces()

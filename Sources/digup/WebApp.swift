@@ -80,6 +80,8 @@ final class WebApp: @unchecked Sendable {
     private let lock = NSLock()
     private var settings: ServeSettings
     private var searchStore: IndexStore?
+    /// Merges Undo takes back, the latest last: what was done and how people were before (under `storeLock`).
+    private var undoable: [(title: String, before: PeopleSnapshot)] = []
     private var searcher: Searcher?
     private var searcherGeneration = -1
     private var generation = 0   // bumped when indexing changed what a search would find
@@ -178,7 +180,18 @@ final class WebApp: @unchecked Sendable {
                   let other = (body["other"] as? NSNumber)?.int64Value, keeper != other else {
                 throw CLIError("merge needs two people")
             }
-            try withSearchStore { try $0.mergePeople(keeper: keeper, other: other) }
+            // At once, without asking: Undo takes a wrong one back.
+            try withSearchStore { store in
+                let names = Dictionary(try store.people().map { ($0.id, $0.displayName) }, uniquingKeysWith: { a, _ in a })
+                let before = try store.mergePeople(keeper: keeper, other: other)
+                undoable.append(("Merged \(names[other] ?? "Person \(other)") into \(names[keeper] ?? "Person \(keeper)")", before))
+            }
+            return .json(["ok": true])
+        case ("POST", "/api/people/undo"):
+            try withSearchStore { store in
+                guard let last = undoable.popLast() else { throw CLIError("nothing to undo") }
+                try store.restorePeople(last.before)
+            }
             return .json(["ok": true])
         case ("GET", "/api/thumb"): return try thumbnail(request)
         case ("GET", "/api/file"): return try file(request)
@@ -330,7 +343,7 @@ final class WebApp: @unchecked Sendable {
 
     private func people() throws -> [String: Any] {
         try withSearchStore { store in
-            ["people": try store.people().map { person -> [String: Any] in
+            ["undo": undoable.last?.title ?? NSNull(), "people": try store.people().map { person -> [String: Any] in
                 var out: [String: Any] = ["id": person.id, "name": person.name ?? NSNull(),
                                           "displayName": person.displayName, "photos": person.photoCount,
                                           "faces": person.faceCount]

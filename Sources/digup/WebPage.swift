@@ -72,6 +72,8 @@ mark { background: color-mix(in srgb, var(--accent) 25%, transparent); color: in
 .more { margin: 18px 0; text-align: center; }
 .empty { color: var(--muted); padding: 48px 0; text-align: center; }
 .facesNote { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+.undoBar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 14px;
+  padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 .people { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 16px; }
 .person { text-align: center; cursor: pointer; }
 .face { width: 110px; height: 110px; border-radius: 50%; overflow: hidden; position: relative; margin: 0 auto 8px;
@@ -344,7 +346,20 @@ document.addEventListener("keydown", e => {
 async function loadPeople() {
   const data = await api("/api/people");
   state.peopleList = data.people;
+  state.undo = data.undo;
   return data.people;
+}
+
+// The last merge, with Undo: merges happen without asking, and this takes a wrong one back.
+function undoBar(after) {
+  if (!state.undo) return [];
+  return [el("div", { className: "undoBar" }, el("span", { textContent: state.undo }),
+    el("button", { className: "btn", textContent: "Undo", onclick: async () => {
+      await api("/api/people/undo", {});
+      await loadPeople();
+      renderPersonChips();
+      after();
+    } }))];
 }
 
 // A square around the face (Vision's box: normalized, origin bottom-left), kept inside the photo.
@@ -382,14 +397,14 @@ async function renderPeople(selected) {
   const faces = facesLine(state.status);
   const note = faces ? [el("p", { className: "facesNote", textContent: `${faces}. People are grouped from these, so some may be missing until the rest are read.` })] : [];
   if (!people.length) {
-    tab.replaceChildren(...note, el("div", { className: "empty", textContent: "No people yet. They show up once photos with faces are indexed." }));
+    tab.replaceChildren(...undoBar(() => renderPeople()), ...note, el("div", { className: "empty", textContent: "No people yet. They show up once photos with faces are indexed." }));
     return;
   }
   if (selected != null) return renderPerson(people.find(p => p.id === selected));
   const grid = el("div", { className: "people" }, ...people.map(person => el("div", { className: "person", onclick: () => renderPerson(person) },
     faceCrop(person, 110), el("div", { className: "pname", textContent: person.displayName }),
     el("div", { className: "count", textContent: `${person.photos} photo${person.photos === 1 ? "" : "s"}` }))));
-  tab.replaceChildren(...note, grid);
+  tab.replaceChildren(...undoBar(() => renderPeople()), ...note, grid);
 }
 
 async function renderPerson(person) {
@@ -399,12 +414,14 @@ async function renderPerson(person) {
   const save = async () => { await api("/api/people/rename", { id: person.id, name: name.value }); person.name = name.value; };
   name.addEventListener("keydown", e => { if (e.key === "Enter") save().then(() => name.blur()); });
   name.addEventListener("change", save);
+  // Whoever is in the most photos first: the big groups are the ones worth merging into.
+  const others = state.peopleList.filter(p => p.id !== person.id)
+    .sort((a, b) => b.photos - a.photos || b.faces - a.faces || a.id - b.id);
   const merge = el("select", {}, el("option", { value: "", textContent: "Same person as…" }),
-    ...state.peopleList.filter(p => p.id !== person.id).map(p => el("option", { value: p.id, textContent: p.displayName })));
+    ...others.map(p => el("option", { value: p.id, textContent: `${p.displayName} · ${p.photos} photo${p.photos === 1 ? "" : "s"}` })));
   merge.onchange = async () => {
     if (!merge.value) return;
     const other = state.peopleList.find(p => p.id === Number(merge.value));
-    if (!confirm(`Put ${person.displayName} and ${other.displayName} together?`)) { merge.value = ""; return; }
     await api("/api/people/merge", { keeper: other.id, other: person.id });
     renderPeople(other.id);
   };
@@ -413,7 +430,7 @@ async function renderPerson(person) {
   const head = el("div", { className: "head" }, el("button", { className: "btn", textContent: "‹ People", onclick: () => renderPeople() }),
     faceCrop(person, 56), name, merge, among);
   const box = el("div", { className: "empty", textContent: "Loading…" });
-  tab.replaceChildren(head, box);
+  tab.replaceChildren(...undoBar(() => renderPeople()), head, box);
   const data = await api(`/api/photos?person=${person.id}&limit=1000`);
   state.results = data.results;
   box.replaceWith(el("div", { className: "grid" }, ...data.results.map((hit, i) => card(hit, i))));

@@ -637,11 +637,20 @@ nonisolated final class Engine: @unchecked Sendable {
         }
     }
 
-    func mergePeople(keeper: Int64, other: Int64) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+    /// Returns how people were before, for `restorePeople` (Undo); nil when nothing changed.
+    func mergePeople(keeper: Int64, other: Int64) async -> PeopleSnapshot? {
+        await peopleChange { try $0.mergePeople(keeper: keeper, other: other) }
+    }
+
+    func restorePeople(_ snapshot: PeopleSnapshot) async {
+        await changePeople { try $0.restorePeople(snapshot) }
+    }
+
+    /// A change to people that can be undone: what it returns is how they were before.
+    private func peopleChange(_ change: @escaping (IndexStore) throws -> PeopleSnapshot) async -> PeopleSnapshot? {
+        await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
-                try? searchStore?.mergePeople(keeper: keeper, other: other)
-                continuation.resume()
+                continuation.resume(returning: searchStore.flatMap { try? change($0) })
             }
         }
     }
@@ -664,8 +673,8 @@ nonisolated final class Engine: @unchecked Sendable {
         await changePeople { try $0.restoreSuggestions() }
     }
 
-    func undoMerges() async {
-        await changePeople { try $0.undoMerges() }
+    func undoMerges() async -> PeopleSnapshot? {
+        await peopleChange { try $0.undoMerges() }
     }
 
     func dismissedSuggestionCount() async -> Int {
