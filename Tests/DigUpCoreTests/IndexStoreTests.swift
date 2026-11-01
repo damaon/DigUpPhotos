@@ -137,6 +137,8 @@ import Testing
         #expect(ModelFiles.totalBytes == 864_676_480)
     }
 
+    // Symbolic links need an administrator (or developer mode) on Windows, and setenv isn't there.
+    #if !os(Windows)
     @Test func modelFilesComeFromTheHuggingFaceCacheWhenThere() throws {
         // As `hf download` leaves them: snapshots/<revision>/<name> → a blob. Sparse, so no disk is used.
         let hub = folder.appendingPathComponent("hub")
@@ -157,6 +159,7 @@ import Testing
         try FileHandle(forWritingTo: blob).truncate(atOffset: 10)
         #expect(ModelFiles.cachedCopy(of: ModelFiles.text, home: folder) == nil)    // not whole
     }
+    #endif
 
     #if canImport(DigUpApple)
     @Test func syncKeepsTheRowsOfAFolderThatWentAway() throws {
@@ -175,6 +178,7 @@ import Testing
     }
     #endif
 
+    #if !os(Windows)
     /// A folder given by a path through a symlink (/tmp for /private/tmp on macOS): the walk reports real paths, and
     /// the second sync finds what the first indexed under them rather than adding it again.
     @Test func syncFindsFilesUnderTheRealPath() throws {
@@ -191,5 +195,6 @@ import Testing
         let again = try indexer.sync([root])
         #expect(again.added == 0 && again.unchanged == 1)
     }
+    #endif
 }
 

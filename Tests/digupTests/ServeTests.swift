@@ -61,7 +61,7 @@ import Testing
     @Test func browsersRequestsOverTheWire() throws {
         let server = try HTTPServer(port: 0) { request in
             if request.path == "/echo" { return .json(["q": request.value("q") ?? "", "path": request.path]) }
-            let file = FileManager.default.temporaryDirectory.appendingPathComponent("range-\(getpid()).txt")
+            let file = FileManager.default.temporaryDirectory.appendingPathComponent("range-\(ProcessInfo.processInfo.processIdentifier).txt")
             try? Data("0123456789".utf8).write(to: file)
             return HTTPServer.Response(status: 206, body: .file(file, 2..<5))
         }
