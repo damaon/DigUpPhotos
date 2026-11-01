@@ -1,0 +1,50 @@
+# Tools and tasks for working on DigUp: `mise install`, then `mise run setup`, `mise run app`, `mise tasks` for the rest.
+# Swift isn't pinned here: on macOS it comes with Xcode 26 (the app needs its SwiftUI and Swift Testing macros), on
+# Linux from swift.org (6.2 or later), on Windows from swift.org with Visual Studio. ffmpeg comes from the system
+# (brew, apt, winget); it's only needed at run time and by the testbed.
+
+[tools]
+uv = "0.13.5"          # Python venvs: the face model's conversion, CMake when it's missing
+python = "3.12.16"     # scripts/serve-smoke.py, the testbed, the reference worker
+cmake = "3.31.12"      # llama.cpp
+ninja = "1.13.2"       # llama.cpp, faster than make
+
+[tasks.setup]
+description = "Native parts: llama.cpp, and the face model (Core ML on macOS, ONNX Runtime elsewhere)"
+run = '''
+scripts/build-llama.sh
+if [[ "$(uname -s)" == Darwin ]]; then scripts/build-sface.sh; else scripts/build-onnx.sh; fi
+'''
+
+[tasks.build]
+description = "Build everything in release"
+run = "swift build -c release"
+
+[tasks.test]
+description = "Run the tests"
+run = "swift test"
+
+[tasks.app]
+description = "Build the macOS app (build.noindex/DigUpPhotos.app) and open it"
+run = ["./build.sh", "open build.noindex/DigUpPhotos.app"]
+
+[tasks.dev]
+description = "Run the app on the testbed with a scratch index and settings (scripts/dev-run.sh)"
+run = "scripts/dev-run.sh"
+
+[tasks.cli]
+description = "Build the digup command-line tool (.build/release/digup)"
+run = "swift build -c release --product digup"
+
+[tasks.serve]
+description = "DigUp in the browser: digup serve --open"
+depends = ["cli"]
+run = ".build/release/digup serve --open"
+
+[tasks.linux-test]
+description = "Build and test on Linux in Docker, as CI does"
+run = "scripts/linux-test.sh"
+
+[tasks.testbed]
+description = "Build the testbed of sample files (~/DigUpTestbed)"
+run = "scripts/make-testbed.sh"
