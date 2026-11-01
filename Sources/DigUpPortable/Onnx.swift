@@ -26,7 +26,13 @@ final class OnnxModel: @unchecked Sendable {
         defer { api.ReleaseSessionOptions(options) }
         _ = Self.check(api.SetSessionGraphOptimizationLevel(options, ORT_ENABLE_ALL))
         var session: OpaquePointer?
-        guard Self.check(api.CreateSession(env, url.path, options, &session)), let session else { return nil }
+        #if os(Windows)
+        // ORTCHAR_T is wchar_t on Windows: the path goes in as UTF-16.
+        let created = url.path.withCString(encodedAs: UTF16.self) { api.CreateSession(env, $0, options, &session) }
+        #else
+        let created = api.CreateSession(env, url.path, options, &session)
+        #endif
+        guard Self.check(created), let session else { return nil }
         var memory: OpaquePointer?
         guard Self.check(api.CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &memory)), let memory else {
             api.ReleaseSession(session)
