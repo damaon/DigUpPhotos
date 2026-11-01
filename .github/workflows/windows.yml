@@ -51,6 +51,12 @@ jobs:
           cp "$(swift build -c release --show-bin-path)/digup.exe" Vendor/onnxruntime/lib/onnxruntime.dll \
             packaging/windows/install.ps1 packaging/windows/digup.ico DigUp/
           DigUp/digup.exe --help | head -1
+      - name: digup serve, as it runs
+        run: |
+          mkdir -p smoke && cp Tests/DigUpCoreTests/Fixtures/sample.docx smoke/
+          ffmpeg -v error -f lavfi -i testsrc=size=640x480 -frames:v 1 smoke/photo.jpg
+          python scripts/serve-smoke.py DigUp/digup.exe smoke 2>&1 | tee smoke.log \
+            || { tail -30 smoke.log | sed 's/^/::error::/'; exit 1; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: DigUp-windows-x64
