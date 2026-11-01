@@ -7,7 +7,7 @@ Search the files on your Mac by what's in them, with Google DeepMind's
 <a href="https://huggingface.co/google/embeddinggemma-2">EmbeddingGemma 2</a>.</p>
 
 <p align="center"><a href="https://github.com/ARahim3/DigUp/releases/latest"><b>Download for Mac</b></a> · Apple Silicon,
-macOS 14 or later · Free and open source</p>
+macOS 14 or later · Linux and Windows from source · Free and open source</p>
 
 <p align="center"><img src="docs/demo.gif" width="800" alt="DigUp's search panel finding a zebra in a video, a podcast moment, a clause in a lease, and a dog on the beach in English, Bengali and Arabic"></p>
 
@@ -143,8 +143,24 @@ download the model on first use, indexes the folders in the background and looks
 this computer's browser gets in. From the terminal instead: `digup download` fetches the model (905 MB with the face
 models, checked against their SHA-256), then `digup index ~/Pictures` and `digup search "dog on the beach"`.
 
-`scripts/linux-test.sh` runs the tests in Docker, and CI does on every push (docs/ARCHITECTURE.md has the plan for the
-rest).
+`scripts/linux-test.sh` runs the tests in Docker, and CI does on every push (docs/ARCHITECTURE.md has the layout).
+
+### On Windows
+
+The same CLI and `digup serve` build on Windows (x64) with Swift 6.3, Visual Studio's C++ tools, CMake and
+Git Bash; `.github/workflows/windows.yml` is the recipe. From Git Bash:
+
+```sh
+scripts/build-sqlite.sh && scripts/build-onnx.sh && scripts/build-llama.sh
+swift build -c release --product digup --static-swift-stdlib
+cp Vendor/onnxruntime/lib/onnxruntime.dll packaging/windows/* .build/release/
+```
+
+Then, in PowerShell, `powershell -ExecutionPolicy Bypass -File .build\release\install.ps1` puts the program in
+`%LOCALAPPDATA%\Programs\DigUp`, "DigUp" in the Start menu (it opens the page in the browser) and starts it at sign-in
+without a window; `-Remove` takes it out again. Sound, video and HEIC need ffmpeg (`winget install Gyan.FFmpeg`), and
+PDFs need poppler's `pdftotext` and `pdftoppm` on PATH. The index and the model live in `%LOCALAPPDATA%\DigUpPhotos`.
+Each CI run also leaves the packaged build (`DigUp-windows-x64`) as an artifact.
 
 `digup mcp` serves the index to AI agents over MCP (stdio): tools `search`, `photos`, `people` and `status`, on the
 index the app keeps (or `--index DIR`). For Claude Code:

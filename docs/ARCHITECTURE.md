@@ -70,8 +70,8 @@ writes (it never indexes or edits it) and uses the same query encoder as `digup 
 
 Each step lands as small commits that build and pass the tests on their own.
 
-Done: 1 to 5 (2026-10-31). The CLI indexes and searches on Linux, and the tests run there (`scripts/linux-test.sh`,
-CI). On the CPU, llama.cpp makes the reference vectors Metal makes. The same 29 files (JPEG, HEIC, video, sound, PDF,
+Done: all seven, 1 to 5 on 2026-10-31 and 6 and 7 on 2026-11-01. The CLI indexes and searches on Linux, and the
+tests run there (`scripts/linux-test.sh`, CI). On the CPU, llama.cpp makes the reference vectors Metal makes. The same 29 files (JPEG, HEIC, video, sound, PDF,
 text) indexed on both agree: every capture date; photos' vectors at cosine 0.986 to 0.998 (decoding and shrinking
 differ a little); text and WAV at 1.000. Faces: on 160 photos of a real library, YuNet finds 213 faces where Vision
 finds 216 (199 the same), SFace gives them vectors at cosine 0.94 (median) to what macOS gives, and the people agree
@@ -93,5 +93,13 @@ raw.pixls.us): the embedded JPEG looks as ImageIO's decoding of the raw does (co
 6. Windows: the same targets with the Windows toolchain (SQLite from the amalgamation, `scripts/build-sqlite.sh`; ONNX
    Runtime's Windows build; llama.cpp with Visual Studio; HEIC through ffmpeg), built and tested by
    `.github/workflows/windows.yml`. File watching is a sync every ten minutes, as on Linux.
-7. A UI beyond macOS: `digup serve`, a local web page, so one UI covers Linux and Windows. Done on Linux and macOS
-   (2026-10-31).
+7. A UI beyond macOS: `digup serve`, a local web page, so one UI covers Linux and Windows, with the launchers in
+   `packaging/`.
+
+On Windows, CI builds the core, the readers, llama.cpp and the CLI, runs the tests (all but the reference-vector test,
+which needs the model) and starts `digup serve` on a photo and a document (`scripts/serve-smoke.py`), then packages
+`digup.exe`, ONNX Runtime and `install.ps1` as the build artifact.
+
+Not yet checked by hand: `install.ps1` on a Windows machine, `packaging/linux/install.sh` and its systemd service on a
+Linux desktop, and the model's vectors on Windows. Left for later: OCR without tesseract, and BLAS for the vector math
+off macOS.
